@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { View, StyleSheet, ScrollView, RefreshControl } from 'react-native';
-import { Text, FAB, Portal, Dialog, useTheme, Button, TextInput, IconButton } from 'react-native-paper';
+import { View, StyleSheet, ScrollView, RefreshControl, TouchableOpacity } from 'react-native';
+import { Text, FAB, Portal, Dialog, useTheme } from 'react-native-paper';
 import { useAuth } from '../../hooks/useAuth';
 import { useRouter, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { offlineTaskService } from '../../services/offline/taskService';
@@ -9,14 +9,44 @@ import TaskList from '../../components/tasks/TaskList';
 import TaskForm from '../../components/tasks/TaskForm';
 import SubtaskForm from '../../components/tasks/SubtaskForm';
 import BottomNavBar, { BOTTOM_NAV_TOTAL_HEIGHT } from '../../components/BottomNavBar';
-import DateTimePicker from '@react-native-community/datetimepicker';
 import OfflineIndicator from '../../components/OfflineIndicator';
+import { LT } from '../../constants/lifeTrackerDesign';
+import { addXP } from '../../utils/xpSystem';
+
+// ─── helpers ────────────────────────────────────────────────────────────────
+
+function todayLabel(): string {
+  return new Date().toLocaleDateString('en', {
+    weekday: 'long',
+    month: 'short',
+    day: 'numeric',
+  }).toUpperCase();
+}
+
+function CompletionBar({ done, total }: { done: number; total: number }) {
+  if (total === 0) return null;
+  const pct = Math.min(1, done / total);
+  return (
+    <View style={{ marginTop: 20, marginHorizontal: 20 }}>
+      <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 4 }}>
+        <Text style={{ fontSize: 10, color: LT.parchmentFaint }}>Daily completion</Text>
+        <Text style={{ fontSize: 10, color: LT.teal }}>{done}/{total}</Text>
+      </View>
+      <View style={{ height: 5, borderRadius: 99, backgroundColor: LT.outlineFaint, overflow: 'hidden' }}>
+        <View style={{ width: `${pct * 100}%`, height: '100%', backgroundColor: LT.teal, borderRadius: 99 }} />
+      </View>
+    </View>
+  );
+}
+
+// ─── main screen ─────────────────────────────────────────────────────────────
 
 export default function TasksScreen() {
   const theme = useTheme();
   const { user } = useAuth();
   const router = useRouter();
   const params = useLocalSearchParams();
+
   const [tasks, setTasks] = useState<Task[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -28,45 +58,21 @@ export default function TasksScreen() {
   const loadTasks = async () => {
     if (!user) return;
     try {
-      console.log('TasksScreen: Loading tasks for user:', user.id);
-      const tasksData = await offlineTaskService.getTasks(user.id);
-      console.log('TasksScreen: Tasks loaded:', tasksData);
-      // Only show active tasks (hide completed and failed)
-      const activeTasks = tasksData.filter(
-        (t) => t.status !== 'completed' && t.status !== 'failed'
-      );
-      console.log('TasksScreen: Active tasks after filter:', activeTasks);
-      setTasks(activeTasks);
-    } catch (error) {
-      console.error('TasksScreen: Error loading tasks:', error);
+      const all = await offlineTaskService.getTasks(user.id);
+      setTasks(all.filter(t => t.status !== 'completed' && t.status !== 'failed'));
+    } catch {
+      // ignore
     } finally {
       setLoading(false);
       setRefreshing(false);
     }
   };
 
-  useEffect(() => {
-    loadTasks();
-  }, [user]);
+  useEffect(() => { loadTasks(); }, [user]);
+  useFocusEffect(React.useCallback(() => { loadTasks(); }, [user]));
+  useEffect(() => { if (params.refresh) loadTasks(); }, [params.refresh]);
 
-  useFocusEffect(
-    React.useCallback(() => {
-      loadTasks();
-    }, [user])
-  );
-
-  // Listen for refresh parameter changes from chat
-  useEffect(() => {
-    if (params.refresh) {
-      console.log('TasksScreen: Refresh parameter detected:', params.refresh);
-      loadTasks();
-    }
-  }, [params.refresh]);
-
-  const onRefresh = () => {
-    setRefreshing(true);
-    loadTasks();
-  };
+  const onRefresh = () => { setRefreshing(true); loadTasks(); };
 
   const handleAddTask = async (taskData: Partial<Task>) => {
     if (!user || !taskData.title) return;
@@ -83,45 +89,33 @@ export default function TasksScreen() {
       await offlineTaskService.createTask(newTask, user.id);
       setShowAddDialog(false);
       loadTasks();
-    } catch (error) {
-      console.error('Error creating task:', error);
-    }
+    } catch { }
   };
 
   const handleEditTask = async (taskData: Partial<Task>) => {
     if (!editingTask) return;
     try {
-      const updatePayload = {
-        ...editingTask,
-        ...taskData,
-        status: 'pending' as TaskStatus,
-      };
-      console.log('Updating task with:', updatePayload);
-      await offlineTaskService.updateTask(editingTask.id, updatePayload);
+      await offlineTaskService.updateTask(editingTask.id, { ...editingTask, ...taskData, status: 'pending' as TaskStatus });
       setEditingTask(null);
       loadTasks();
-    } catch (error) {
-      console.error('Error updating task:', error);
-    }
+    } catch { }
   };
 
   const handleDeleteTask = async (taskId: string) => {
-    try {
-      // The offlineTaskService.deleteTask now handles subtask deletion automatically
-      await offlineTaskService.deleteTask(taskId);
-      loadTasks();
-    } catch (error) {
-      console.error('Error deleting task:', error);
-    }
+    try { await offlineTaskService.deleteTask(taskId); loadTasks(); } catch { }
   };
 
   const handleStatusChange = async (taskId: string, status: TaskStatus) => {
     try {
       await offlineTaskService.updateTaskStatus(taskId, status);
+      if (status === 'completed') {
+        // Award XP for completing a task: base 10 XP, or scale by priority if available
+        const task = tasks.find(t => t.id === taskId);
+        const xp = task ? Math.max(10, (task.priority ?? 1) * 5 + 5) : 10;
+        await addXP(xp);
+      }
       loadTasks();
-    } catch (error) {
-      console.error('Error updating task status:', error);
-    }
+    } catch { }
   };
 
   const handleAddSubtask = (parentTaskId: string) => {
@@ -132,53 +126,55 @@ export default function TasksScreen() {
   const handleSubtaskSubmit = async (subtaskData: TaskCreate & { parent_task_id: string }) => {
     if (!user) return;
     try {
-      await offlineTaskService.createTask({
-        ...subtaskData,
-      }, user.id);
+      await offlineTaskService.createTask({ ...subtaskData }, user.id);
       setShowSubtaskDialog(false);
       setSelectedParentTaskId(null);
       loadTasks();
-    } catch (error) {
-      console.error('Error creating subtask:', error);
-    }
+    } catch { }
   };
 
   const handleGenerateAISubtasks = async (parentTaskId: string) => {
     if (!user) return;
-    try {
-      const parentTask = tasks.find(t => t.id === parentTaskId);
-      if (!parentTask) return;
-
-      // Navigate to chat with AI subtask generation request
-      router.push({
-        pathname: '/(app)/chat',
-        params: { 
-          aiSubtaskRequest: `Create subtasks for "${parentTask.title}"`,
-          parentTaskId: parentTaskId
-        }
-      });
-    } catch (error) {
-      console.error('Error generating AI subtasks:', error);
-    }
+    const parentTask = tasks.find(t => t.id === parentTaskId);
+    if (!parentTask) return;
+    router.push({
+      pathname: '/(app)/chat',
+      params: { aiSubtaskRequest: `Create subtasks for "${parentTask.title}"`, parentTaskId },
+    });
   };
 
+  const completedCount = tasks.filter(t => t.status === 'completed').length;
+  const rootTasks = tasks.filter(t => !t.parent_task_id);
+
   return (
-    <View style={{ flex: 1, backgroundColor: theme.colors.background }}>
-        <View style={styles.headerRow}>
-          <Text style={[styles.headerTitle, { color: theme.colors.onSurface }]}>Daily</Text>
-        <IconButton icon="refresh" onPress={onRefresh} iconColor={theme.colors.onSurface} />
+    <View style={{ flex: 1, backgroundColor: LT.bg }}>
+
+      {/* ── HEADER ────────────────────────────────────────────────────────── */}
+      <View style={styles.headerRow}>
+        <View>
+          <Text style={styles.headerEyebrow}>{todayLabel()}</Text>
+          <Text style={styles.headerTitle}>Daily</Text>
+        </View>
+        <TouchableOpacity onPress={onRefresh} style={styles.refreshBtn}>
+          <Text style={{ color: LT.parchmentFaint, fontSize: 18 }}>↻</Text>
+        </TouchableOpacity>
       </View>
+      <Text style={styles.headerSub}>Expand steps. Completing all steps earns XP.</Text>
+
+      {/* ── TASK LIST ─────────────────────────────────────────────────────── */}
       <ScrollView
-        style={[styles.scrollView, { backgroundColor: theme.colors.background }]}
-        contentContainerStyle={{ paddingBottom: BOTTOM_NAV_TOTAL_HEIGHT + 60 }}
-        refreshControl={
-          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
-        }
+        style={{ flex: 1 }}
+        contentContainerStyle={{ paddingHorizontal: 20, paddingBottom: BOTTOM_NAV_TOTAL_HEIGHT + 80 }}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={LT.amber} />}
       >
         {loading ? (
-          <Text style={[styles.loadingText, { color: theme.colors.onSurfaceVariant }]}>Loading tasks...</Text>
+          <Text style={styles.stateText}>Loading quests...</Text>
         ) : tasks.length === 0 ? (
-          <Text style={[styles.emptyText, { color: theme.colors.onSurfaceVariant }]}>No tasks yet. Add one to get started!</Text>
+          <View style={styles.emptyContainer}>
+            <Text style={{ fontSize: 36 }}>⚔️</Text>
+            <Text style={styles.stateText}>No tasks yet.</Text>
+            <Text style={styles.stateSub}>Tap + to add your first quest.</Text>
+          </View>
         ) : (
           <TaskList
             tasks={tasks}
@@ -190,53 +186,42 @@ export default function TasksScreen() {
             onDeleteSubtask={handleDeleteTask}
           />
         )}
+
+        <CompletionBar done={completedCount} total={rootTasks.length} />
       </ScrollView>
+
+      {/* ── ADD TASK FAB ──────────────────────────────────────────────────── */}
       <FAB
         icon="plus"
-        style={[fabAboveNavBarStyle, { backgroundColor: theme.colors.primary }]}
-        color={theme.colors.onPrimary}
+        style={styles.fab}
+        color={LT.bg}
         onPress={() => setShowAddDialog(true)}
       />
+
+      {/* ── DIALOGS ───────────────────────────────────────────────────────── */}
       <Portal>
-        <Dialog
-          visible={showAddDialog}
-          onDismiss={() => setShowAddDialog(false)}
-          style={styles.dialog}
-        >
-          <Dialog.Title>Add New Task</Dialog.Title>
+        <Dialog visible={showAddDialog} onDismiss={() => setShowAddDialog(false)} style={styles.dialog}>
+          <Dialog.Title style={styles.dialogTitle}>New Quest</Dialog.Title>
           <Dialog.Content>
-            <ScrollView style={styles.dialogScrollView} showsVerticalScrollIndicator={false}>
-              <TaskForm
-                onSubmit={handleAddTask}
-                onCancel={() => setShowAddDialog(false)}
-              />
+            <ScrollView style={{ maxHeight: 600 }} showsVerticalScrollIndicator={false}>
+              <TaskForm onSubmit={handleAddTask} onCancel={() => setShowAddDialog(false)} />
             </ScrollView>
           </Dialog.Content>
         </Dialog>
-        <Dialog
-          visible={!!editingTask}
-          onDismiss={() => setEditingTask(null)}
-          style={styles.dialog}
-        >
-          <Dialog.Title>Edit Task</Dialog.Title>
+
+        <Dialog visible={!!editingTask} onDismiss={() => setEditingTask(null)} style={styles.dialog}>
+          <Dialog.Title style={styles.dialogTitle}>Edit Quest</Dialog.Title>
           <Dialog.Content>
-            <ScrollView style={styles.dialogScrollView} showsVerticalScrollIndicator={false}>
-              <TaskForm
-                task={editingTask || undefined}
-                onSubmit={handleEditTask}
-                onCancel={() => setEditingTask(null)}
-              />
+            <ScrollView style={{ maxHeight: 600 }} showsVerticalScrollIndicator={false}>
+              <TaskForm task={editingTask || undefined} onSubmit={handleEditTask} onCancel={() => setEditingTask(null)} />
             </ScrollView>
           </Dialog.Content>
         </Dialog>
-        <Dialog
-          visible={showSubtaskDialog}
-          onDismiss={() => setShowSubtaskDialog(false)}
-          style={styles.dialog}
-        >
-          <Dialog.Title>Add Subtask</Dialog.Title>
+
+        <Dialog visible={showSubtaskDialog} onDismiss={() => setShowSubtaskDialog(false)} style={styles.dialog}>
+          <Dialog.Title style={styles.dialogTitle}>Add Step</Dialog.Title>
           <Dialog.Content>
-            <ScrollView style={styles.dialogScrollView} showsVerticalScrollIndicator={false}>
+            <ScrollView style={{ maxHeight: 600 }} showsVerticalScrollIndicator={false}>
               <SubtaskForm
                 parentTaskId={selectedParentTaskId || ''}
                 onSubmit={handleSubtaskSubmit}
@@ -246,71 +231,82 @@ export default function TasksScreen() {
           </Dialog.Content>
         </Dialog>
       </Portal>
+
       <BottomNavBar />
       <OfflineIndicator />
     </View>
   );
 }
 
+// ─── styles ──────────────────────────────────────────────────────────────────
+
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
+  headerRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    paddingHorizontal: 20,
+    paddingTop: 44,
+    paddingBottom: 4,
+    borderBottomWidth: 0.5,
+    borderBottomColor: LT.surfaceDeep,
   },
-  backButton: {
-    margin: 16,
-    marginBottom: 0,
+  headerEyebrow: {
+    fontSize: 10,
+    color: LT.parchmentFaint,
+    letterSpacing: 2,
+    marginBottom: 2,
   },
-  scrollView: {
-    flex: 1,
+  headerTitle: {
+    fontSize: 22,
+    fontWeight: '700',
+    color: LT.parchment,
   },
-  loadingText: {
+  refreshBtn: {
+    paddingTop: 12,
+    paddingLeft: 12,
+  },
+  headerSub: {
+    fontSize: 10,
+    color: LT.parchmentFaint,
+    paddingHorizontal: 20,
+    paddingTop: 6,
+    paddingBottom: 14,
+  },
+  stateText: {
+    color: LT.parchmentFaint,
+    fontSize: 14,
     textAlign: 'center',
-    marginTop: 20,
-    fontSize: 16,
+    marginTop: 40,
   },
-  emptyText: {
+  stateSub: {
+    color: LT.parchmentFaint,
+    fontSize: 12,
     textAlign: 'center',
-    marginTop: 20,
-    fontSize: 16,
+    opacity: 0.6,
+  },
+  emptyContainer: {
+    alignItems: 'center',
+    paddingVertical: 40,
+    gap: 8,
   },
   fab: {
     position: 'absolute',
-    margin: 16,
-    right: 0,
-    bottom: 0,
+    right: 24,
+    bottom: BOTTOM_NAV_TOTAL_HEIGHT + 20,
+    backgroundColor: LT.amber,
+    zIndex: 200,
+    elevation: 6,
   },
   dialog: {
-    maxWidth: '100%',
+    backgroundColor: LT.surfaceDeep,
+    borderRadius: 16,
+    borderWidth: 0.5,
+    borderColor: LT.outlineFaint,
   },
-  dialogScrollView: {
-    maxHeight: 600,
+  dialogTitle: {
+    color: LT.parchment,
+    fontSize: 16,
+    fontWeight: '700',
   },
-  form: {
-    marginBottom: 20,
-  },
-  input: {
-    borderWidth: 1,
-    borderColor: '#ccc',
-    padding: 10,
-    marginBottom: 10,
-  },
-  headerRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 20,
-    paddingTop: 32,
-    paddingBottom: 8,
-  },
-  headerTitle: {
-    fontSize: 24,
-    fontWeight: 'bold',
-  },
-}); 
-
-const fabAboveNavBarStyle = {
-  position: 'absolute' as const,
-  right: 24,
-  bottom: BOTTOM_NAV_TOTAL_HEIGHT + 20,
-  zIndex: 200,
-}; 
+});

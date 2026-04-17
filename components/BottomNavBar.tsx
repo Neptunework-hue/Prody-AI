@@ -1,14 +1,14 @@
 import React from 'react';
-import { View, StyleSheet, Platform, TouchableOpacity, Dimensions } from 'react-native';
+import { View, StyleSheet, TouchableOpacity, Dimensions } from 'react-native';
 import { useRouter, usePathname } from 'expo-router';
 import { IconButton } from 'react-native-paper';
 import Animated, { useSharedValue, useAnimatedStyle, withTiming } from 'react-native-reanimated';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { LT } from '../constants/lifeTrackerDesign';
 
 // Export the height constant for use in other components
 export const BOTTOM_NAV_HEIGHT = 64;
-export const BOTTOM_NAV_PADDING = Platform.OS === 'ios' ? 18 : 8;
-export const BOTTOM_NAV_TOTAL_HEIGHT = BOTTOM_NAV_HEIGHT + BOTTOM_NAV_PADDING;
+export const BOTTOM_NAV_TOTAL_HEIGHT = BOTTOM_NAV_HEIGHT + 34; // 34 = safe max inset
 
 /** Five tabs per design.md: Home, Daily, Focus, Habits, Shelf */
 const NAV_ITEMS = [
@@ -23,6 +23,7 @@ const TAB_WIDTH = Dimensions.get('window').width / NAV_ITEMS.length;
 export default function BottomNavBar() {
   const router = useRouter();
   const pathname = usePathname();
+  const insets = useSafeAreaInsets();
   // Use includes for robust matching
   const activeIndex = NAV_ITEMS.findIndex(item => pathname.includes(item.route));
   const activeColor = NAV_ITEMS[activeIndex]?.color || LT.amber;
@@ -51,7 +52,7 @@ export default function BottomNavBar() {
   }));
 
   return (
-    <View style={styles.outerContainer}>
+    <View style={[styles.outerContainer, { paddingBottom: Math.max(insets.bottom, 8) }]}>
       <View style={styles.container}>
         {NAV_ITEMS.map((item, idx) => {
           const isActive = idx === activeIndex;
@@ -99,7 +100,6 @@ const styles = StyleSheet.create({
     bottom: 0,
     zIndex: 1000,
     alignItems: 'center',
-    paddingBottom: BOTTOM_NAV_PADDING,
     backgroundColor: 'transparent',
   },
   container: {
