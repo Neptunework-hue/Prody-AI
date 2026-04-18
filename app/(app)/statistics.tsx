@@ -1,56 +1,144 @@
-import React from 'react';
-import { View, StyleSheet, ScrollView } from 'react-native';
-import { Text, Card, IconButton, useTheme } from 'react-native-paper';
-import { LT } from '../../constants/lifeTrackerDesign';
-// import a chart library if available, else use a placeholder
-// import { LineChart } from 'react-native-chart-kit';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import {
+  View,
+  StyleSheet,
+  ScrollView,
+  Text,
+  Pressable,
+  ActivityIndicator,
+} from 'react-native';
+import { FONT_SERIF } from '../../constants/lifeTrackerDesign';
+import { useAppTheme } from '../../contexts/AppThemeContext';
+import ThemeModeToggle from '../../components/ThemeModeToggle';
+import QuestLogScreenHeader from '../../components/QuestLogScreenHeader';
+import Sidebar from '../../components/Sidebar';
 import BottomNavBar, { BOTTOM_NAV_TOTAL_HEIGHT } from '../../components/BottomNavBar';
 import { useAuth } from '../../hooks/useAuth';
 import { focusService } from '../../services/supabase/focus';
 import { offlineTaskService } from '../../services/offline/taskService';
 import { habitService } from '../../services/supabase/habitService';
-import { useEffect, useState } from 'react';
 import { useFocusEffect } from 'expo-router';
-import { supabase } from '../../services/supabase/supabase';
+import { Task } from '../../types/task';
+import { FocusSession } from '../../types/focus';
+import { Habit } from '../../types/habit';
+import { taskXpValue } from '../../components/tasks/TaskCardWithSubtasks';
+import StatsMultiLineChart, {
+  StatsSeriesKey,
+  StatsSeries,
+  StatsVisibility,
+} from '../../components/statistics/StatsMultiLineChart';
+import {
+  lastNDayKeys,
+  buildDailyStatsSeries,
+  computeHabitCompletionRates,
+} from '../../utils/statisticsData';
 
-// Removed mock placeholders; pulling real data
+const DAYS = 30;
 
 export default function StatisticsScreen() {
-  const theme = useTheme();
+  const { colors: c, isLight } = useAppTheme();
   const { user } = useAuth();
-  const [focusSessions, setFocusSessions] = useState([]);
-  const [completedTasks, setCompletedTasks] = useState([]);
-  const [failedTasks, setFailedTasks] = useState([]);
-  const [allTasks, setAllTasks] = useState([]);
-  const [habits, setHabits] = useState<any[]>([]);
-  const [habitCounts, setHabitCounts] = useState<Record<string, number>>({});
+  const [sidebarVisible, setSidebarVisible] = useState(false);
+  const [loading, setLoading] = useState(true);
 
-  // Centralized loader
-  const loadData = React.useCallback(async () => {
+  const [tasks, setTasks] = useState<Task[]>([]);
+  const [sessions, setSessions] = useState<FocusSession[]>([]);
+  const [habits, setHabits] = useState<Habit[]>([]);
+  const [habitHistory, setHabitHistory] = useState<
+    { habit_id: string; date: string; value?: number }[]
+  >([]);
+
+  const [totalXp, setTotalXp] = useState(0);
+  const [questsDone, setQuestsDone] = useState(0);
+  const [focusHours, setFocusHours] = useState(0);
+  const [habitRatePct, setHabitRatePct] = useState(0);
+
+  const [series30, setSeries30] = useState<StatsSeries>({
+    xp: Array(DAYS).fill(0),
+    quests: Array(DAYS).fill(0),
+    focus: Array(DAYS).fill(0),
+    habits: Array(DAYS).fill(0),
+  });
+  const [dayKeys, setDayKeys] = useState<string[]>([]);
+  const [habitRates, setHabitRates] = useState<{ id: string; title: string; rate: number }[]>([]);
+
+  const [visible, setVisible] = useState<StatsVisibility>({
+    xp: true,
+    quests: true,
+    focus: true,
+    habits: true,
+  });
+
+  const shell = useMemo(
+    () => ({
+      bg: c.bg,
+      surf: c.surf,
+      tx: c.tx,
+      tx2: c.tx2,
+      border: c.borderDefault,
+      mutedGold: c.sidebarMutedGold,
+    }),
+    [c],
+  );
+
+  const loadData = useCallback(async () => {
     if (!user) return;
-    const [sessions, all, userHabits] = await Promise.all([
-      focusService.getSessions(user.id),
-      offlineTaskService.getTasks(user.id),
-      habitService.getHabits(user.id),
-    ]);
-    setFocusSessions(sessions as any);
-    setAllTasks(all as any);
-    // Derive completed/failed from offline tasks
-    const comp = (all as any).filter((t: any) => t.status === 'completed');
-    const fail = (all as any).filter((t: any) => t.status === 'failed');
-    setCompletedTasks(comp);
-    setFailedTasks(fail);
-    setHabits(userHabits as any);
-    const ids = (userHabits as any).map((h: any) => h.id);
-    if (ids.length > 0) {
-      const history = await habitService.getHabitHistoryByHabitIds(ids);
-      const counts: Record<string, number> = {};
-      history.forEach((row: any) => {
-        counts[row.habit_id] = (counts[row.habit_id] || 0) + (row.value || 0);
-      });
-      setHabitCounts(counts);
-    } else {
-      setHabitCounts({});
+    setLoading(true);
+    try {
+      const keys = lastNDayKeys(DAYS);
+      setDayKeys(keys);
+
+      const [allTasks, focusSessionsList, userHabits, stats] = await Promise.all([
+        offlineTaskService.getTasks(user.id),
+        focusService.getSessions(user.id),
+        habitService.getHabits(user.id),
+        focusService.getStats(user.id),
+      ]);
+
+      setTasks(allTasks);
+      setSessions(focusSessionsList);
+
+      let hist: { habit_id: string; date: string; value?: number }[] = [];
+      if (userHabits.length > 0) {
+        hist = await habitService.getHabitHistoryByHabitIds(userHabits.map((h) => h.id));
+      }
+      setHabitHistory(hist);
+      setHabits(userHabits);
+
+      const series = buildDailyStatsSeries(keys, allTasks, focusSessionsList, userHabits, hist);
+      setSeries30(series);
+
+      const habitMap = new Map(userHabits.map((h) => [h.id, h]));
+      let hx = 0;
+      for (const row of hist) {
+        if ((row.value ?? 0) <= 0) continue;
+        const h = habitMap.get(row.habit_id);
+        if (h) hx += h.xp_reward ?? 15;
+      }
+      const completed = allTasks.filter((t) => t.status === 'completed');
+      const taskXp = completed.reduce((s, t) => s + taskXpValue(t), 0);
+      const focusXp = Math.floor(stats.total_duration);
+      setTotalXp(Math.max(0, taskXp + hx + focusXp));
+      setQuestsDone(completed.length);
+      setFocusHours(Math.round(stats.total_duration / 60));
+
+      let slots = 0;
+      let fills = 0;
+      for (const h of userHabits) {
+        for (const dk of keys) {
+          slots++;
+          if (hist.some((r) => r.habit_id === h.id && r.date === dk && (r.value ?? 0) > 0)) {
+            fills++;
+          }
+        }
+      }
+      setHabitRatePct(slots ? Math.round((fills / slots) * 100) : 0);
+
+      setHabitRates(computeHabitCompletionRates(userHabits, hist, keys));
+    } catch (e) {
+      console.error('Statistics load', e);
+    } finally {
+      setLoading(false);
     }
   }, [user]);
 
@@ -58,132 +146,273 @@ export default function StatisticsScreen() {
     loadData();
   }, [loadData]);
 
-  // Refresh on screen focus
-  useFocusEffect(React.useCallback(() => {
-    loadData();
-    return () => {};
-  }, [loadData]));
+  useFocusEffect(
+    useCallback(() => {
+      loadData();
+    }, [loadData]),
+  );
 
-  // Realtime subscriptions for immediate updates
-  useEffect(() => {
-    if (!user) return;
-    const channel = supabase
-      .channel('stats_realtime')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'habits', filter: `user_id=eq.${user.id}` }, loadData)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'habit_history' }, loadData)
-      .subscribe();
-    return () => { supabase.removeChannel(channel); };
-  }, [user, loadData]);
+  const toggleTrack = useCallback((k: StatsSeriesKey) => {
+    setVisible((v) => {
+      const next = { ...v, [k]: !v[k] };
+      if (!Object.values(next).some(Boolean)) return v;
+      return next;
+    });
+  }, []);
+
+  const statCards = useMemo(
+    () =>
+      [
+        {
+          key: 'xp' as const,
+          value: totalXp.toLocaleString(),
+          label: 'Total XP',
+          color: c.amber,
+        },
+        {
+          key: 'quests' as const,
+          value: String(questsDone),
+          label: 'Quests done',
+          color: c.teal,
+        },
+        {
+          key: 'focus' as const,
+          value: `${focusHours}h`,
+          label: 'Focus',
+          color: c.blue,
+        },
+        {
+          key: 'habits' as const,
+          value: `${habitRatePct}%`,
+          label: 'Habit rate',
+          color: c.pink,
+        },
+      ] as const,
+    [totalXp, questsDone, focusHours, habitRatePct, c],
+  );
+
+  const barColors = useMemo(() => [c.amber, c.teal, c.blue, c.pink], [c]);
 
   return (
-    <View style={{ flex: 1, backgroundColor: theme.colors.background, paddingBottom: BOTTOM_NAV_TOTAL_HEIGHT }}>
-      <ScrollView contentContainerStyle={{ padding: 16 }}>
-        <Text style={[styles.header, { color: theme.colors.onSurface }]}>Statistics</Text>
-        <Text style={[styles.subheader, { color: LT.parchmentMuted }]}>Your productivity overview</Text>
-        {/* Habit summary - horizontal scrollable */}
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ paddingVertical: 4 }}>
-          <View style={{ flexDirection: 'row' }}>
-            {habits.map((h: any) => (
-              <Card key={h.id} mode="elevated" style={[styles.habitCard, { marginRight: 12, backgroundColor: theme.colors.surfaceVariant }]}> 
-                <View style={{ flexDirection: 'row', justifyContent: 'space-between', width: '100%' }}>
-                  <Text style={{ fontSize: 28 }}>{h.icon || '🧩'}</Text>
-                  <IconButton icon="delete" onPress={async () => { await habitService.deleteHabit(h.id); const updated = await habitService.getHabits(user!.id); setHabits(updated as any); }} size={18} style={{ margin: 0 }} />
-                </View>
-                <Text style={{ fontWeight: 'bold', marginTop: 4, color: theme.colors.onSurface }} numberOfLines={1}>{h.title}</Text>
-                <Text style={{ color: LT.parchmentMuted, fontSize: 12 }}>+{habitCounts[h.id] || 0} times</Text>
-              </Card>
-            ))}
-          </View>
-        </ScrollView>
-        {/* Completion rate */}
-        <Card mode="elevated" style={[styles.chartCard, { backgroundColor: theme.colors.surfaceVariant }]}>
-          <Text style={{ fontWeight: 'bold', marginBottom: 8, color: theme.colors.onSurface }}>Tasks Completion Rate</Text>
-          {(() => {
-            const total = allTasks.length || 0;
-            const completed = completedTasks.length || 0;
-            const rate = total > 0 ? Math.round((completed / total) * 100) : 0;
-            return (
-              <View style={{ height: 80, justifyContent: 'center' }}>
-                <Text style={{ fontSize: 28, fontWeight: 'bold', color: theme.colors.primary }}>{rate}%</Text>
-                <Text style={{ color: LT.parchmentMuted, fontSize: 12 }}>{completed} of {total} tasks completed</Text>
-              </View>
-            );
-          })()}
-        </Card>
-        {/* History Section */}
-        <Card mode="elevated" style={[styles.historyCard, { backgroundColor: theme.colors.surfaceVariant }]}>
-          <Text style={{ fontWeight: 'bold', marginBottom: 8, color: theme.colors.onSurface }}>History</Text>
-          {focusSessions.length === 0 && completedTasks.length === 0 && failedTasks.length === 0 && <Text style={{ color: LT.parchmentMuted }}>No history yet.</Text>}
-          {focusSessions.map(session => (
-            <View key={session.id} style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 8 }}>
-              <Text style={{ fontSize: 18, marginRight: 8 }}>⏱️</Text>
-              <View>
-                <Text style={{ fontWeight: 'bold', color: theme.colors.onSurface }}>Focus Session</Text>
-                <Text style={{ color: LT.parchmentMuted, fontSize: 12 }}>{session.notes || 'No notes'} - {session.start_time.slice(0, 10)}</Text>
-                <Text style={{ color: LT.parchmentMuted, fontSize: 11, opacity: 0.8 }}>{session.start_time.slice(0, 10)}</Text>
-              </View>
+    <View style={{ flex: 1, backgroundColor: shell.bg }}>
+      <QuestLogScreenHeader
+        title="Statistics"
+        sidebarVisible={sidebarVisible}
+        onOpenSidebar={() => setSidebarVisible(true)}
+        titleColor={shell.tx}
+        right={<ThemeModeToggle />}
+      />
+
+      <ScrollView
+        contentContainerStyle={[
+          styles.scrollInner,
+          { paddingBottom: BOTTOM_NAV_TOTAL_HEIGHT + 28 },
+        ]}
+        showsVerticalScrollIndicator={false}
+      >
+        {loading ? (
+          <ActivityIndicator color={c.amber} style={{ marginTop: 24 }} />
+        ) : (
+          <>
+            <View style={styles.statGrid}>
+              {statCards.map((card) => {
+                const on = visible[card.key];
+                return (
+                  <Pressable
+                    key={card.key}
+                    onPress={() => toggleTrack(card.key)}
+                    style={({ pressed }) => [
+                      styles.statCard,
+                      {
+                        backgroundColor: shell.surf,
+                        borderColor: on ? card.color : shell.border,
+                        borderWidth: on ? 2 : 1,
+                        opacity: pressed ? 0.92 : on ? 1 : 0.42,
+                      },
+                    ]}
+                    accessibilityRole="button"
+                    accessibilityState={{ selected: on }}
+                    accessibilityLabel={`${card.label}. Tap to ${on ? 'hide' : 'show'} on chart.`}
+                  >
+                    <Text style={[styles.statValue, { color: card.color }]}>{card.value}</Text>
+                    <Text style={[styles.statLabel, { color: shell.mutedGold }]}>{card.label}</Text>
+                  </Pressable>
+                );
+              })}
             </View>
-          ))}
-          {completedTasks.map(task => (
-            <View key={task.id} style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 8 }}>
-              <Text style={{ fontSize: 18, marginRight: 8 }}>✅</Text>
-              <View>
-                <Text style={{ fontWeight: 'bold', color: LT.teal }}>Task Completed</Text>
-                <Text style={{ color: LT.parchmentMuted, fontSize: 12 }}>{task.title} - {task.updated_at.slice(0, 10)}</Text>
-                <Text style={{ color: LT.parchmentMuted, fontSize: 11, opacity: 0.8 }}>{task.updated_at.slice(0, 10)}</Text>
-              </View>
+
+            <Text style={[styles.sectionLabel, { color: shell.mutedGold }]}>
+              Activity — last {DAYS} days
+            </Text>
+            <StatsMultiLineChart
+              series={series30}
+              visible={visible}
+              dayKeys={dayKeys}
+              gridColor={shell.border}
+              labelColor={shell.tx2}
+              surfaceColor={isLight ? '#e4e0d8' : c.bg2}
+            />
+
+            <View style={styles.legendRow}>
+              {(['xp', 'quests', 'focus', 'habits'] as StatsSeriesKey[]).map((k) => {
+                const legendColors: Record<StatsSeriesKey, string> = {
+                  xp: c.amber,
+                  quests: c.teal,
+                  focus: c.blue,
+                  habits: c.pink,
+                };
+                const labels: Record<StatsSeriesKey, string> = {
+                  xp: 'XP',
+                  quests: 'Quests',
+                  focus: 'Focus',
+                  habits: 'Habits',
+                };
+                return (
+                  <Text
+                    key={k}
+                    style={[
+                      styles.legendItem,
+                      { color: legendColors[k], opacity: visible[k] ? 1 : 0.35 },
+                    ]}
+                  >
+                    ● {labels[k]}
+                  </Text>
+                );
+              })}
             </View>
-          ))}
-          {failedTasks.map(task => (
-            <View key={task.id} style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 8 }}>
-              <Text style={{ fontSize: 18, marginRight: 8 }}>❌</Text>
-              <View>
-                <Text style={{ fontWeight: 'bold', color: theme.colors.error }}>Task Failed</Text>
-                <Text style={{ color: LT.parchmentMuted, fontSize: 12 }}>{task.title} - {task.updated_at.slice(0, 10)}</Text>
-                <Text style={{ color: LT.parchmentMuted, fontSize: 11, opacity: 0.8 }}>{task.updated_at.slice(0, 10)}</Text>
-              </View>
+
+            <Text style={[styles.sectionLabel, { color: shell.mutedGold, marginTop: 20 }]}>
+              Habit completion rates
+            </Text>
+            <View style={[styles.habitPanel, { backgroundColor: shell.surf, borderColor: shell.border }]}>
+              {habitRates.length === 0 ? (
+                <Text style={[styles.emptyHabits, { color: shell.tx2 }]}>
+                  No habits yet. Add habits to see completion rates.
+                </Text>
+              ) : (
+                habitRates.map((h, i) => {
+                  const bar = barColors[i % barColors.length];
+                  return (
+                    <View key={h.id} style={styles.habitRow}>
+                      <View style={styles.habitTitleRow}>
+                        <Text style={[styles.habitName, { color: shell.tx }]} numberOfLines={1}>
+                          {h.title}
+                        </Text>
+                        <Text style={[styles.habitPct, { color: bar }]}>{h.rate}%</Text>
+                      </View>
+                      <View
+                        style={[
+                          styles.habitTrack,
+                          {
+                            backgroundColor: isLight ? 'rgba(28,25,22,0.08)' : 'rgba(232,224,204,0.08)',
+                          },
+                        ]}
+                      >
+                        <View style={[styles.habitFill, { width: `${h.rate}%`, backgroundColor: bar }]} />
+                      </View>
+                    </View>
+                  );
+                })
+              )}
             </View>
-          ))}
-        </Card>
-        {/* Add more analytics as needed */}
+          </>
+        )}
       </ScrollView>
+
       <BottomNavBar />
+      <Sidebar isVisible={sidebarVisible} onClose={() => setSidebarVisible(false)} />
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  header: {
-    fontSize: 24,
-    fontWeight: 'bold',
-    marginBottom: 8,
+  scrollInner: {
+    paddingHorizontal: 16,
+    paddingTop: 8,
   },
-  subheader: {
+  statGrid: {
+    flexDirection: 'row',
+    gap: 10,
+    marginBottom: 20,
+  },
+  statCard: {
+    flex: 1,
+    minWidth: 0,
+    borderRadius: 12,
+    borderWidth: 1,
+    paddingVertical: 12,
+    paddingHorizontal: 6,
+    alignItems: 'center',
+  },
+  statValue: {
+    fontFamily: FONT_SERIF,
+    fontSize: 17,
+    fontWeight: '700',
+    marginBottom: 4,
+  },
+  statLabel: {
+    fontFamily: FONT_SERIF,
+    fontSize: 10,
+    textAlign: 'center',
+    fontWeight: '600',
+  },
+  sectionLabel: {
+    fontFamily: FONT_SERIF,
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 1.4,
+    textTransform: 'uppercase',
+    marginBottom: 10,
+  },
+  legendRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 12,
+    marginBottom: 8,
+    marginTop: 4,
+  },
+  legendItem: {
+    fontFamily: FONT_SERIF,
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  habitPanel: {
+    borderRadius: 12,
+    borderWidth: 1,
+    padding: 16,
+  },
+  emptyHabits: {
+    fontFamily: FONT_SERIF,
     fontSize: 14,
-    marginBottom: 16,
   },
   habitRow: {
+    marginBottom: 16,
+  },
+  habitTitleRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    marginBottom: 16,
-  },
-  habitCard: {
-    width: 140,
     alignItems: 'center',
-    padding: 12,
-    borderRadius: 16,
-    elevation: 2,
+    marginBottom: 8,
   },
-  chartCard: {
-    marginBottom: 16,
-    padding: 16,
-    borderRadius: 16,
-    elevation: 2,
+  habitName: {
+    fontFamily: FONT_SERIF,
+    fontSize: 15,
+    fontWeight: '600',
+    flex: 1,
+    marginRight: 12,
   },
-  historyCard: {
-    marginBottom: 16,
-    padding: 16,
-    borderRadius: 16,
-    elevation: 2,
+  habitPct: {
+    fontFamily: FONT_SERIF,
+    fontSize: 15,
+    fontWeight: '700',
   },
-}); 
+  habitTrack: {
+    height: 8,
+    borderRadius: 4,
+    overflow: 'hidden',
+  },
+  habitFill: {
+    height: '100%',
+    borderRadius: 4,
+  },
+});

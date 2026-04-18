@@ -2,6 +2,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import NetInfo from '@react-native-community/netinfo';
 import { Task, TaskCreate } from '../../types/task';
 import { FocusSession } from '../../types/focus';
+import { taskService } from '../supabase/task';
 
 // Storage keys
 const STORAGE_KEYS = {
@@ -11,6 +12,11 @@ const STORAGE_KEYS = {
   LAST_SYNC: 'offline_last_sync',
   USER_ID: 'offline_user_id'
 };
+
+/** True if `id` matches Supabase `tasks.id` (uuid). Local-only tasks use `offline_…` from generateOfflineId. */
+function isUuidTaskId(id: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(id));
+}
 
 // Operation types for pending operations
 export type OperationType = 'CREATE_TASK' | 'UPDATE_TASK' | 'DELETE_TASK' | 'CREATE_FOCUS_SESSION' | 'UPDATE_FOCUS_SESSION';
@@ -102,13 +108,16 @@ class OfflineService {
 
   // Task operations
   async createTask(taskData: TaskCreate, userId: string): Promise<Task> {
+    const xp = taskData.xp_reward ?? 25;
     const task: Task = {
       id: this.generateOfflineId(),
       user_id: userId,
       title: taskData.title,
       description: taskData.description || '',
       status: 'pending',
-      priority: taskData.priority || 0,
+      priority: taskData.priority ?? 0,
+      xp_reward: xp,
+      folder_id: taskData.folder_id ?? null,
       deadline: taskData.deadline,
       startTime: taskData.startTime,
       endTime: taskData.endTime,
@@ -119,7 +128,7 @@ class OfflineService {
       is_deep_work: false,
       ai_priority_score: undefined,
       parent_task_id: taskData.parent_task_id,
-      activities: taskData.activities || []
+      activities: taskData.activities ?? [],
     };
 
     if (this.isOnline) {
@@ -187,26 +196,41 @@ class OfflineService {
 
   async deleteTask(taskId: string, userId: string): Promise<void> {
     console.log('OfflineService: deleteTask called with taskId:', taskId, 'userId:', userId);
-    
+
+    await this.removeLocalTask(taskId);
+    await this.notifyListeners();
+
     if (this.isOnline) {
+      if (!isUuidTaskId(taskId)) {
+        return;
+      }
       try {
-        // Try to delete from server first
-        // await taskService.deleteTask(taskId);
-        console.log('OfflineService: Online - removing local task');
-        await this.removeLocalTask(taskId);
+        await taskService.deleteTask(taskId);
       } catch (error) {
-        // If server fails, delete locally and queue for sync
-        console.log('OfflineService: Server failed, deleting locally and queuing for sync');
-        await this.removeLocalTask(taskId);
+        console.warn('OfflineService: Server delete failed, queueing DELETE_TASK', error);
         await this.addPendingOperation('DELETE_TASK', { id: taskId }, userId);
       }
-    } else {
-      // Offline - delete locally and queue for sync
-      console.log('OfflineService: Offline - deleting locally and queuing for sync');
-      await this.removeLocalTask(taskId);
+    } else if (isUuidTaskId(taskId)) {
       await this.addPendingOperation('DELETE_TASK', { id: taskId }, userId);
     }
     console.log('OfflineService: deleteTask completed for taskId:', taskId);
+  }
+
+  /** Task IDs waiting for server delete — merged Supabase fetch must ignore these or ghosts reappear. */
+  async getPendingDeleteTaskIds(userId: string): Promise<Set<string>> {
+    const operations = await this.getPendingOperations();
+    const ids = new Set<string>();
+    for (const op of operations) {
+      if (
+        op.type === 'DELETE_TASK' &&
+        op.userId === userId &&
+        op.data?.id != null &&
+        isUuidTaskId(String(op.data.id))
+      ) {
+        ids.add(String(op.data.id));
+      }
+    }
+    return ids;
   }
 
   async getTasks(userId?: string): Promise<Task[]> {
@@ -312,9 +336,13 @@ class OfflineService {
             case 'UPDATE_TASK':
               // await taskService.updateTask(operation.data.id, operation.data.updates);
               break;
-            case 'DELETE_TASK':
-              // await taskService.deleteTask(operation.data.id);
+            case 'DELETE_TASK': {
+              const delId = operation.data?.id;
+              if (delId != null && isUuidTaskId(String(delId))) {
+                await taskService.deleteTask(String(delId));
+              }
               break;
+            }
             case 'CREATE_FOCUS_SESSION':
               // await focusService.createSession(operation.data);
               break;

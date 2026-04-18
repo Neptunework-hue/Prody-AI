@@ -1,35 +1,16 @@
 import React, { useEffect, useState } from 'react';
 import { View, StyleSheet } from 'react-native';
-import { List, IconButton, Menu, Divider, Text, useTheme, Card, Chip, Button } from 'react-native-paper';
 import { Task, TaskStatus } from '../../types/task';
-import TaskFocusButton from './TaskFocusButton';
 import { useAuth } from '../../hooks/useAuth';
 import { taskService } from '../../services/supabase/task';
 import TaskCardWithSubtasks from './TaskCardWithSubtasks';
 
-// Activity mapping for display
-const ACTIVITY_OPTIONS = [
-  // Most frequently used activities first
-  { key: 'exercise', label: 'Exercise', emoji: '🏋️' },
-  { key: 'reading', label: 'Reading', emoji: '📖' },
-  { key: 'meditation', label: 'Meditation', emoji: '🧘' },
-  { key: 'working', label: 'Working', emoji: '💻' },
-  { key: 'study', label: 'Study', emoji: '📚' },
-  { key: 'writing', label: 'Writing', emoji: '📝' },
-  { key: 'jogging', label: 'Jogging', emoji: '🏃' },
-  { key: 'cooking', label: 'Cooking', emoji: '👨‍🍳' },
-  { key: 'guitar', label: 'Guitar', emoji: '🎸' },
-  { key: 'painting', label: 'Painting', emoji: '🎨' },
-  { key: 'gaming', label: 'Gaming', emoji: '🎮' },
-  { key: 'shopping', label: 'Shopping', emoji: '🛍️' },
-  { key: 'party', label: 'Party', emoji: '🎉' },
-  { key: 'trading', label: 'Trading', emoji: '📊' },
-  { key: 'loving', label: 'Loving', emoji: '❤️' },
-  { key: 'drink', label: 'Drink', emoji: '💧' },
-];
+export type TaskFolderFilter = 'all' | 'ungrouped' | string;
 
 interface TaskListProps {
   tasks: Task[];
+  /** When set, only root tasks matching this folder filter are listed. */
+  folderFilter?: TaskFolderFilter;
   onStatusChange: (taskId: string, status: TaskStatus) => void;
   onEdit: (task: Task) => void;
   onDelete: (taskId: string) => void;
@@ -40,6 +21,7 @@ interface TaskListProps {
 
 const TaskList: React.FC<TaskListProps> = ({
   tasks,
+  folderFilter = 'all',
   onStatusChange,
   onEdit,
   onDelete,
@@ -47,9 +29,7 @@ const TaskList: React.FC<TaskListProps> = ({
   onGenerateAISubtasks,
   onDeleteSubtask,
 }) => {
-  const theme = useTheme();
   const { user } = useAuth();
-  const [menuVisible, setMenuVisible] = React.useState<string | null>(null);
   const [expandedTasks, setExpandedTasks] = useState<Set<string>>(new Set());
 
   useEffect(() => {
@@ -60,14 +40,6 @@ const TaskList: React.FC<TaskListProps> = ({
     };
     checkOverdueTasks();
   }, [user]);
-
-  const handleMenuOpen = (taskId: string) => {
-    setMenuVisible(taskId);
-  };
-
-  const handleMenuClose = () => {
-    setMenuVisible(null);
-  };
 
   const toggleSubtasks = (taskId: string) => {
     setExpandedTasks(prev => {
@@ -139,34 +111,17 @@ const TaskList: React.FC<TaskListProps> = ({
     return date < new Date();
   };
 
-  // Get activities display
-  const getActivitiesDisplay = (task: Task) => {
-    if (!task.activities || task.activities.length === 0) return null;
-    
-    return (
-      <View style={styles.activitiesContainer}>
-        {task.activities.slice(0, 3).map((activityKey, idx) => {
-          const activity = ACTIVITY_OPTIONS.find(a => a.key === activityKey);
-          return activity ? (
-            <Text key={idx} style={styles.activityEmoji}>
-              {activity.emoji}
-            </Text>
-          ) : null;
-        })}
-        {task.activities.length > 3 && (
-          <Text style={styles.activityMore}>+{task.activities.length - 3}</Text>
-        )}
-      </View>
-    );
-  };
-
   // Get subtasks for a task
   const getSubtasks = (taskId: string) => {
     return tasks.filter(task => task.parent_task_id === taskId);
   };
 
-  // Filter out subtasks from main list (they'll be shown under parents)
-  const parentTasks = tasks.filter(task => !task.parent_task_id);
+  const parentTasks = tasks.filter((task) => {
+    if (task.parent_task_id) return false;
+    if (folderFilter === 'all') return true;
+    if (folderFilter === 'ungrouped') return !task.folder_id;
+    return task.folder_id === folderFilter;
+  });
   
   // Debug log to verify subtasks are being found
   const allSubtasks = tasks.filter(task => task.parent_task_id);
@@ -203,136 +158,9 @@ const TaskList: React.FC<TaskListProps> = ({
   );
 };
 
-function getPriorityColor(priority: number) {
-  if (priority >= 3) return '#ff5252'; // High
-  if (priority === 2) return '#ffb300'; // Medium
-  return '#4caf50'; // Low
-}
-
 const styles = StyleSheet.create({
   listContainer: {
     paddingBottom: 16,
-  },
-  taskCard: {
-    marginBottom: 14,
-    borderRadius: 16,
-    overflow: 'hidden',
-    backgroundColor: '#fff',
-  },
-  row: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    padding: 16,
-  },
-  infoContainer: {
-    flex: 1,
-    marginLeft: 8,
-  },
-  title: {
-    fontSize: 18,
-    fontWeight: 'bold',
-    color: '#222',
-    marginBottom: 2,
-  },
-  completed: {
-    textDecorationLine: 'line-through',
-    color: '#bbb',
-  },
-  description: {
-    fontSize: 14,
-    color: '#666',
-    marginTop: 2,
-  },
-  activitiesContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginTop: 4,
-  },
-  activityEmoji: {
-    fontSize: 16,
-    marginRight: 4,
-  },
-  activityMore: {
-    fontSize: 12,
-    color: '#888',
-    fontWeight: 'bold',
-  },
-  priorityChip: {
-    alignSelf: 'flex-start',
-    marginTop: 4,
-    marginBottom: 2,
-    height: 24,
-    borderRadius: 12,
-  },
-  priorityText: {
-    fontSize: 12,
-    color: '#fff',
-    fontWeight: 'bold',
-  },
-  actions: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginLeft: 8,
-  },
-  dateText: {
-    fontSize: 12,
-    color: '#888',
-    marginTop: 2,
-  },
-  subtasksHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginTop: 8,
-    paddingTop: 8,
-    borderTopWidth: 1,
-    borderTopColor: '#f0f0f0',
-  },
-  subtasksInfo: {
-    flex: 1,
-  },
-  subtasksLabel: {
-    fontSize: 14,
-    fontWeight: '500',
-    color: '#666',
-  },
-  subtasksHint: {
-    fontSize: 12,
-    color: '#888',
-    marginTop: 2,
-  },
-  subtasksContainer: {
-    backgroundColor: '#f9f9f9',
-    paddingHorizontal: 16,
-    paddingBottom: 12,
-  },
-  subtaskItem: {
-    marginTop: 8,
-  },
-  subtaskRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#fff',
-    borderRadius: 8,
-    padding: 8,
-  },
-  subtaskInfo: {
-    flex: 1,
-    marginLeft: 8,
-  },
-  subtaskTitle: {
-    fontSize: 16,
-    fontWeight: '500',
-    color: '#333',
-  },
-  subtaskDescription: {
-    fontSize: 12,
-    color: '#666',
-    marginTop: 2,
-  },
-  subtaskActions: {
-    flexDirection: 'row',
-    alignItems: 'center',
   },
 });
 

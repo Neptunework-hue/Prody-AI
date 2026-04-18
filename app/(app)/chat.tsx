@@ -1,17 +1,38 @@
-import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { View, StyleSheet, Image, KeyboardAvoidingView, Platform, FlatList, Modal as RNModal, Animated, Easing, TouchableOpacity, Alert, AppState, AppStateStatus, Keyboard } from 'react-native';
-import { Text, Button, TextInput, IconButton, Avatar, useTheme } from 'react-native-paper';
+import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
+import {
+  View,
+  StyleSheet,
+  KeyboardAvoidingView,
+  Platform,
+  FlatList,
+  Animated,
+  Easing,
+  TouchableOpacity,
+  Alert,
+  Modal,
+  TextInput as RNTextInput,
+  InteractionManager,
+} from 'react-native';
+import { Text, Button, IconButton, Avatar } from 'react-native-paper';
+import { MaterialCommunityIcons } from '@expo/vector-icons';
+import { Audio } from 'expo-av';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import VoiceOrb from '../../components/chat/VoiceOrb';
+import ListeningDots from '../../components/chat/ListeningDots';
+import { openaiChatCompletions, transcribeAudioUri, getOpenAIKey } from '../../services/openai/openaiClient';
+import { runProdyToolAgentLoop } from '../../services/ai/prodyToolAgent';
 import { useRouter, useLocalSearchParams, useFocusEffect } from 'expo-router';
-import BottomNavBar, { BOTTOM_NAV_TOTAL_HEIGHT } from '../../components/BottomNavBar';
+import { FONT_SERIF, type ThemeColors } from '../../constants/lifeTrackerDesign';
+import { useAppTheme } from '../../contexts/AppThemeContext';
 import { offlineTaskService } from '../../services/offline/taskService';
 import { useAuth } from '../../hooks/useAuth';
 import * as Speech from 'expo-speech';
 import OfflineIndicator from '../../components/OfflineIndicator';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Task, TaskCreate, TaskPriority } from '../../types/task';
-
-// Dummy bot image import (user should place the image at ProdyAI/assets/prody-bot.png)
-const botImage = require('../../assets/prody-bot.png');
+import { formatDateForStorage } from '../../utils/dateUtils';
+import { speakBot, preloadBotVoice } from '../../utils/botSpeech';
+import { addTaskFolder, getOrCreateTaskFolderByName, getTaskFolders } from '../../services/foldersStorage';
 
 const BOT_NAME = 'PRODY';
 
@@ -24,567 +45,395 @@ type ChatMessage = {
 };
 
 const initialMessages: ChatMessage[] = [
-  { id: '1', sender: 'bot', text: 'Hi! I am Prody. How can I help you today?\n\nI can:\n• Create tasks and add them to your calendar\n• Break down complex tasks into subtasks using AI\n• Update existing tasks\n• Help you plan your schedule\n\nTry saying: "Create subtasks for my project" or "Break down my homework" to get AI-generated subtasks!' },
+  {
+    id: '1',
+    sender: 'bot',
+    text:
+      "Hey — I'm PRODY. I can help you sort out what's on your plate, spin up folders and grouped tasks, break big stuff into steps, and line things up on your calendar.\n\nSay or type something like “plan my week” or “break this project into tasks in folders.”",
+  },
 ];
 
-// DeepSeek API integration
-const DEEPSEEK_API_KEY = 'sk-0626ab8a919d49c9ab05abae965dd337';
-const DEEPSEEK_API_URL = 'https://api.deepseek.com/v1/chat/completions';
-
-// Optimized API configuration for faster responses
+/** OpenAI Chat Completions (GPT-4o mini) — set EXPO_PUBLIC_OPENAI_API_KEY in `.env` */
 const API_CONFIG = {
-  model: 'deepseek-chat',
-  temperature: 0.3, // Reduced from 0.7 for faster, more focused responses
-  max_tokens: 500, // Reduced from 1000 to limit response length
-  top_p: 0.9, // Add top_p for more focused sampling
-  frequency_penalty: 0.1, // Reduce repetition
-  presence_penalty: 0.1, // Encourage new topics
-  timeout: 10000 // 10 second timeout
+  temperature: 0.75,
+  max_tokens: 650,
+  top_p: 0.9,
+  frequency_penalty: 0.15,
+  presence_penalty: 0.1,
+  timeout: 25000,
 };
 
-// Height of the chat input bar (approx.) used for spacing the message list
-const INPUT_BAR_HEIGHT = 72;
+/** Core PRODY voice — see docs/AI sound rules.md (conversation first, no system-log tone). */
+const PRODY_SYSTEM_BASE = `You are PRODY — a thoughtful productivity copilot inside a quest/task app with a calendar, not a task bot.
 
-// Tool schemas for DeepSeek function calling
-const TOOL_SCHEMAS = [
-  {
-    type: "function",
-    function: {
-      name: 'createTask',
-      description: 'Create a new task for the user. If a date or time is provided, add it to the calendar.',
-      parameters: {
-        type: 'object',
-        properties: {
-          title: { type: 'string', description: 'Task title' },
-          description: { type: 'string', description: 'Task details' },
-          deadline: { type: 'string', format: 'date', description: 'Date for the task (optional, adds to calendar)' },
-          startTime: { type: 'string', format: 'date-time', description: 'Start time for the task (optional)' },
-          endTime: { type: 'string', format: 'date-time', description: 'End time for the task (optional)' }
-        },
-        required: ['title']
-      }
-    }
-  },
-  {
-    type: "function",
-    function: {
-      name: 'createSubtasks',
-      description: 'Create subtasks for an existing task. Break down a complex task into smaller, manageable subtasks.',
-      parameters: {
-        type: 'object',
-        properties: {
-          parentTaskTitle: { type: 'string', description: 'Title of the parent task to add subtasks to' },
-          subtasks: {
-            type: 'array',
-            items: {
-              type: 'object',
-              properties: {
-                title: { type: 'string', description: 'Subtask title' },
-                description: { type: 'string', description: 'Subtask details' },
-                priority: { type: 'number', description: 'Priority level (0-3, where 0=Low, 1=Medium, 2=High, 3=Urgent)' }
-              },
-              required: ['title']
-            }
-          }
-        },
-        required: ['parentTaskTitle', 'subtasks']
-      }
-    }
-  },
-  {
-    type: "function",
-    function: {
-      name: 'createTasks',
-      description: 'Create multiple tasks for breaking down a problem or project. If dates are provided, add them to the calendar.',
-      parameters: {
-        type: 'object',
-        properties: {
-          tasks: {
-            type: 'array',
-            items: {
-              type: 'object',
-              properties: {
-                title: { type: 'string', description: 'Task title' },
-                description: { type: 'string', description: 'Task details' },
-                deadline: { type: 'string', format: 'date', description: 'Date for the task (optional, adds to calendar)' },
-                startTime: { type: 'string', format: 'date-time', description: 'Start time for the task (optional)' },
-                endTime: { type: 'string', format: 'date-time', description: 'End time for the task (optional)' }
-              },
-              required: ['title']
-            }
-          }
-        },
-        required: ['tasks']
-      }
-    }
-  },
-  {
-    type: "function",
-    function: {
-      name: 'updateTask',
-      description: 'Update an existing task.',
-      parameters: {
-        type: 'object',
-        properties: {
-          id: { type: 'string' },
-          title: { type: 'string' },
-          description: { type: 'string' },
-          deadline: { type: 'string', format: 'date' },
-          startTime: { type: 'string', format: 'date-time' },
-          endTime: { type: 'string', format: 'date-time' },
-          starttime: { type: 'string', format: 'date-time' },
-          endtime: { type: 'string', format: 'date-time' },
-          status: { type: 'string' }
-        }
-      }
-    }
-  },
-  {
-    type: "function",
-    function: {
-      name: 'proposeSchedule',
-      description: 'Propose a study or work schedule for the user based on their input.',
-      parameters: {
-        type: 'object',
-        properties: {
-          details: { type: 'string' }
-        },
-        required: ['details']
-      }
-    }
-  },
-  {
-    type: "function",
-    function: {
-      name: 'confirmSchedule',
-      description: 'Confirm and create/update all tasks/events in the proposed schedule.',
-      parameters: {
-        type: 'object',
-        properties: {
-          tasks: {
-            type: 'array',
-            items: {
-              type: 'object',
-              properties: {
-                title: { type: 'string' },
-                description: { type: 'string' },
-                deadline: { type: 'string', format: 'date' },
-                starttime: { type: 'string', format: 'date-time' },
-                endtime: { type: 'string', format: 'date-time' }
-              },
-              required: ['title']
-            }
-          }
-        },
-        required: ['tasks']
-      }
-    }
-  },
-  {
-    type: "function",
-    function: {
-      name: 'getTasks',
-      description: 'Get a list of the user\'s current tasks.',
-      parameters: {
-        type: 'object',
-        properties: {},
-        required: []
-      }
-    }
-  },
-  {
-    type: "function",
-    function: {
-      name: 'getCalendarEvents',
-      description: 'Get a list of the user\'s current calendar events (tasks with dates).',
-      parameters: {
-        type: 'object',
-        properties: {},
-        required: []
-      }
-    }
+Respond to the human situation first. Don't narrate system operations. Don't sound like customer support. Don't jump straight into listing features unless they asked what you can do.
+
+When this chat creates or moves work (tasks, folders, calendar), talk about it the way you'd tell a friend ("I split that across three evenings") — never like a database log ("Task created successfully", "Folder created", "Updated deadline", "Here are the steps").
+
+Tone: contractions, varied sentence length, conversational. Keep replies short unless they want depth. Skip bullet walls unless they asked for structure or a tiny list really helps.
+
+If they don't name a date for a task, **today** is the right default mentally — the app matches that. Voice input can be messy — infer intent. Only ask a follow-up when something critical is missing, and ask one focused question — not an interrogation.
+
+Don't claim you already ran app actions unless this chat flow would have done it.`;
+
+function isOverwhelmedIntent(message: string) {
+  const keywords = [
+    'overwhelmed', 'too much', 'can\'t handle', 'stressed', 'so many tasks', 'too many tasks',
+    'lost', 'don\'t know where to start', 'anxious', 'panic', 'burnt out', 'burned out', 'exhausted',
+    'help me focus', 'help me prioritize', 'help me organize', 'help me break down', 'need help',
+    'need to focus', 'need to organize', 'need to prioritize', 'need to break down'
+  ];
+  return keywords.some(word => message.toLowerCase().includes(word));
+}
+
+function detectConversationContext(userMessage: string) {
+  const m = userMessage.toLowerCase();
+  const overwhelmed = isOverwhelmedIntent(userMessage);
+  const likelyVenting =
+    /\b(ugh|argh|i hate this|so done|need to vent|just ranting)\b/.test(m) &&
+    !/\b(create|add|task|schedule|remind|folder|break into)\b/.test(m);
+  return { overwhelmed, likelyVenting };
+}
+
+function buildProdySystemPrompt(userMessage: string): string {
+  const ctx = detectConversationContext(userMessage);
+  const bits: string[] = [];
+  if (ctx.overwhelmed) {
+    bits.push('They sound overloaded — acknowledge that in one short line before you get practical.');
   }
-];
+  if (ctx.likelyVenting) {
+    bits.push('They may be venting — meet that emotionally first; don’t bulldoze into tasks unless they steer there.');
+  }
+  if (bits.length === 0) return PRODY_SYSTEM_BASE;
+  return `${PRODY_SYSTEM_BASE}\n\nContext for this turn:\n${bits.join('\n')}`;
+}
 
-// Simple test function to verify function calling works
-const TEST_FUNCTIONS = [
-  {
-    name: 'test_function',
-    description: 'A simple test function',
-    parameters: {
-      type: 'object',
-      properties: {
-        message: { type: 'string', description: 'A test message' }
+type NaturalizePayload =
+  | { kind: 'tasks_planned'; userDraft: string; taskCount: number; folderHint?: string }
+  | { kind: 'folder_ready'; name: string; duplicate?: boolean }
+  | { kind: 'task_saved'; title: string; coachNote?: string }
+  | { kind: 'task_updated'; title: string; changed: string }
+  | { kind: 'subtasks_added'; parentTitle: string; stepTitles: string[]; coachNote?: string }
+  | { kind: 'list_or_rank'; internalDraft: string };
+
+const NATURALIZE_SYSTEM = `You rewrite assistant text for PRODY, a productivity copilot.
+
+Output ONLY the final message the user reads — no quotes, no preamble, no JSON.
+
+Rules:
+- Human voice: contractions, natural rhythm. No customer-support tone.
+- Forbidden phrases (never use): "Task created successfully", "Folder created", "Updated deadline", "Generated N subtasks", "Here are the steps", "I'd be happy to help", "Certainly", "To assist you".
+- Say what changed in plain language. Don't expose field names, "the system", or tool jargon.
+- Avoid bullet walls; at most 3 very short bullets only if unavoidable. Prefer flowing sentences.`;
+
+async function naturalizeProdyFacing(userMessage: string, payload: NaturalizePayload): Promise<string> {
+  if (!getOpenAIKey()) {
+    return fallbackNaturalize(payload);
+  }
+  const facts = JSON.stringify(payload);
+  try {
+    const controller = new AbortController();
+    const tid = setTimeout(() => controller.abort(), 14000);
+    const res = await openaiChatCompletions(
+      {
+        messages: [
+          { role: 'system', content: NATURALIZE_SYSTEM },
+          {
+            role: 'user',
+            content: `User said:\n${userMessage}\n\nFacts for you (do not repeat as JSON):\n${facts}\n\nWrite the user-facing reply.`,
+          },
+        ],
+        temperature: 0.55,
+        max_tokens: 220,
       },
-      required: ['message']
+      controller.signal,
+    );
+    clearTimeout(tid);
+    if (!res.ok) {
+      return fallbackNaturalize(payload);
     }
+    const data = (await res.json()) as { choices?: { message?: { content?: string } }[] };
+    const out = data.choices?.[0]?.message?.content?.trim();
+    return out && out.length > 0 ? out : fallbackNaturalize(payload);
+  } catch {
+    return fallbackNaturalize(payload);
   }
-];
+}
 
-// Simple regex-based date parser
-function parseSimpleDate(userMessage: string): string | undefined {
-  const msg = userMessage.toLowerCase();
-  const today = new Date();
-  // today
-  if (/\btoday\b/.test(msg)) {
-    return today.toISOString().split('T')[0];
+function fallbackNaturalize(payload: NaturalizePayload): string {
+  switch (payload.kind) {
+    case 'tasks_planned':
+      return payload.userDraft;
+    case 'folder_ready':
+      return payload.duplicate
+        ? `You've already got a folder called "${payload.name}" — you're covered.`
+        : `You're set — I added a "${payload.name}" bucket you can use.`;
+    case 'task_saved':
+      return payload.coachNote
+        ? `Got it — I saved "${payload.title}" for you.\n\n${payload.coachNote}`
+        : `Got it — I saved "${payload.title}" for you.`;
+    case 'task_updated':
+      return `Done — I adjusted "${payload.title}" (${payload.changed}).`;
+    case 'subtasks_added':
+      return payload.coachNote
+        ? `I split "${payload.parentTitle}" into a few smaller steps — ${payload.stepTitles.slice(0, 4).join(', ')}${payload.stepTitles.length > 4 ? '…' : ''}.\n\n${payload.coachNote}`
+        : `I split "${payload.parentTitle}" into ${payload.stepTitles.length} smaller steps — peek at your list when you're ready.`;
+    case 'list_or_rank':
+      return 'Peek at your Tasks tab — that’s where the full picture lives.';
+    default:
+      return '';
   }
-  // tomorrow
-  if (/\btomorrow\b/.test(msg)) {
-    const tmr = new Date(today);
-    tmr.setDate(today.getDate() + 1);
-    return tmr.toISOString().split('T')[0];
+}
+
+/** Composer row height for list padding (capsule + safe area). */
+const INPUT_BAR_HEIGHT = 64;
+
+/** After speech is detected, stop & send when volume stays below threshold this long. */
+const VOICE_SILENCE_MS = 3000;
+/** expo-av metering dBFS — values above this count as speech (typical speech ~-35 to -20). */
+const VOICE_METERING_DB = -48;
+
+function pad(n: number) {
+  return n.toString().padStart(2, '0');
+}
+
+/** Calendar day (YYYY-MM-DD) for a planned task: honor full ISO on slots, else dayOffset from today. */
+function computePlanTaskDeadlineYmd(t: { dayOffset?: number; startTime?: string; endTime?: string }, off: number): string {
+  const st = t.startTime?.trim();
+  if (st && /^\d{4}-\d{2}-\d{2}T/.test(st)) return st.slice(0, 10);
+  const et = t.endTime?.trim();
+  if (et && /^\d{4}-\d{2}-\d{2}T/.test(et)) return et.slice(0, 10);
+  const d = new Date();
+  d.setHours(0, 0, 0, 0);
+  d.setDate(d.getDate() + off);
+  return formatDateForStorage(d);
+}
+
+/** Turn optional start/end hints into full ISO local datetimes on deadlineYmd. */
+function normalizePlanSlotToIso(deadlineYmd: string, slot: string | undefined): string | undefined {
+  if (!slot || typeof slot !== 'string') return undefined;
+  const t = slot.trim();
+  if (!t) return undefined;
+  if (/^\d{4}-\d{2}-\d{2}T\d/.test(t)) {
+    if (t.length === 16 && t[13] === ':') return `${t}:00`;
+    return t;
   }
-  // on YYYY-MM-DD
-  const isoMatch = msg.match(/on (\d{4}-\d{2}-\d{2})/);
-  if (isoMatch) {
-    return isoMatch[1];
-  }
-  // on Month Day (e.g., on July 20)
-  const monthDayMatch = msg.match(/on ([a-zA-Z]+) (\d{1,2})/);
-  if (monthDayMatch) {
-    const month = monthDayMatch[1];
-    const day = parseInt(monthDayMatch[2], 10);
-    const year = today.getFullYear();
-    const date = new Date(`${month} ${day}, ${year}`);
-    if (!isNaN(date.getTime())) {
-      return date.toISOString().split('T')[0];
-    }
+  const lower = t.toLowerCase();
+  const m = lower.match(/^(\d{1,2})(?::(\d{2}))?\s*(am|pm)?$/);
+  if (m) {
+    let h = parseInt(m[1], 10);
+    const min = m[2] ? parseInt(m[2], 10) : 0;
+    const ap = m[3];
+    if (ap === 'pm' && h < 12) h += 12;
+    if (ap === 'am' && h === 12) h = 0;
+    if (h < 0 || h > 23 || min < 0 || min > 59) return undefined;
+    return `${deadlineYmd}T${pad(h)}:${pad(min)}:00`;
   }
   return undefined;
 }
 
-// Enhanced regex-based time and priority parser
-function parseTimeAndPriority(userMessage: string, deadline?: string): { starttime?: string, endtime?: string, priority?: number } {
-  const msg = userMessage.toLowerCase();
-  let starttime: string | undefined;
-  let endtime: string | undefined;
-  let priority: number | undefined;
-
-  // Time extraction (e.g., at 8pm, at 14:30, from 2pm to 3pm)
-  // 1. Range: from X to Y
-  const rangeMatch = msg.match(/from (\d{1,2})(?::(\d{2}))?\s*(am|pm)? to (\d{1,2})(?::(\d{2}))?\s*(am|pm)?/);
-  if (rangeMatch && deadline) {
-    const [ , sh, sm, sap, eh, em, eap ] = rangeMatch;
-    const date = deadline;
-    const startHour = sap ? to24Hour(parseInt(sh), sap) : parseInt(sh);
-    const endHour = eap ? to24Hour(parseInt(eh), eap) : parseInt(eh);
-    const startMinute = sm ? parseInt(sm) : 0;
-    const endMinute = em ? parseInt(em) : 0;
-    starttime = `${date}T${pad(startHour)}:${pad(startMinute)}:00`;
-    endtime = `${date}T${pad(endHour)}:${pad(endMinute)}:00`;
-  } else {
-    // 2. Single time: at X
-    const singleMatch = msg.match(/at (\d{1,2})(?::(\d{2}))?\s*(am|pm)?/);
-    if (singleMatch && deadline) {
-      const [ , h, m, ap ] = singleMatch;
-      const date = deadline;
-      const hour = ap ? to24Hour(parseInt(h), ap) : parseInt(h);
-      const minute = m ? parseInt(m) : 0;
-      starttime = `${date}T${pad(hour)}:${pad(minute)}:00`;
-    }
-  }
-
-  // Priority extraction
-  if (/\burgent\b|asap|immediately/.test(msg)) priority = 3;
-  else if (/\bhigh priority\b|very important|critical/.test(msg)) priority = 2;
-  else if (/\bmedium priority\b|normal priority/.test(msg)) priority = 1;
-  else if (/\blow priority\b|not urgent|not important/.test(msg)) priority = 0;
-
-  return { starttime, endtime, priority };
+function parseCreateFolderIntent(userMessage: string): string | null {
+  const trimmed = userMessage.trim();
+  const m = trimmed.match(
+    /(?:^|\n)\s*(?:create|add|make)\s+(?:a\s+)?(?:new\s+)?folder\s+(?:called|named\s+)?["']?([^"'\n]+?)["']?\s*\.?\s*$/i,
+  );
+  if (m?.[1]) return m[1].trim();
+  const m2 = trimmed.match(/new\s+folder\s*[:\-]\s*([^\n]+)/i);
+  return m2?.[1]?.trim() ?? null;
 }
-function to24Hour(hour: number, ampm: string) {
-  if (ampm === 'pm' && hour < 12) return hour + 12;
-  if (ampm === 'am' && hour === 12) return 0;
-  return hour;
-}
-function pad(n: number) { return n.toString().padStart(2, '0'); }
 
-// Text-based task extraction system
-function extractTaskFromResponse(userMessage: string, aiResponse: string): { title: string; description: string; deadline?: string; starttime?: string; endtime?: string; priority?: number } | null {
-  const userMsgLower = userMessage.toLowerCase();
-  const aiResponseLower = aiResponse.toLowerCase();
-  
-  // Check if user is asking to create a task
-  const taskKeywords = ['create task', 'add task', 'new task', 'make task', 'add to tasks', 'remind me', 'reminder', 'schedule', 'todo'];
-  const isTaskRequest = taskKeywords.some(keyword => userMsgLower.includes(keyword));
-  
-  // Enhanced implicit task patterns with better context
-  const implicitTaskPatterns = [
-    /(tidy|clean|organize|sort|arrange)\s+([a-z\s]+)/i,
-    /(study|read|write|work on|finish|complete)\s+([a-z\s]+)/i,
-    /(buy|purchase|get|pick up)\s+([a-z\s]+)/i,
-    /(call|text|email|message|contact)\s+([a-z\s]+)/i,
-    /(meet|meeting with|appointment with)\s+([a-z\s]+)/i,
-    /(go to|visit|attend|travel to)\s+([a-z\s]+)/i,
-    /(cook|prepare|make)\s+([a-z\s]+)/i,
-    /(exercise|workout|run|jog|walk)\s+([a-z\s]*)/i,
-    /(review|check|examine)\s+([a-z\s]+)/i,
-    /(submit|send|upload)\s+([a-z\s]+)/i
+async function resolveFolderIdFromMessage(userMessage: string, userId: string): Promise<string | null> {
+  const patterns = [
+    /(?:in|inside|under)\s+(?:the\s+)?folder\s+["']?([^"'\n]+?)["']?(?:\s|$|,|\.)/i,
+    /(?:in|under)\s+(?:the\s+)?project\s+["']?([^"'\n]+?)["']?(?:\s|$|,|\.)/i,
   ];
-  
-  const implicitTaskMatch = implicitTaskPatterns.find(pattern => pattern.test(userMessage));
-  const hasImplicitTask = !!implicitTaskMatch;
-  
-  console.log('Task extraction check:', { 
-    userMessage, 
-    isTaskRequest, 
-    hasImplicitTask,
-    taskKeywords: taskKeywords.filter(k => userMsgLower.includes(k)),
-    implicitMatch: implicitTaskMatch ? implicitTaskMatch[0] : null
-  });
-  
-  if (!isTaskRequest && !hasImplicitTask) return null;
-  
-  // Extract deadline using simple regex parser
-  const deadline = parseSimpleDate(userMessage);
-  // Extract time and priority
-  const { starttime, endtime, priority } = parseTimeAndPriority(userMessage, deadline);
-  
-  // Try to extract task title from user message
-  let title = '';
-  let description = '';
-  
-  // First, try to extract from implicit task patterns
-  if (implicitTaskMatch) {
-    const match = userMessage.match(implicitTaskMatch);
-    if (match && match[0]) {
-      const action = match[1]; // e.g., "call", "clean", "study"
-      const target = match[2]; // e.g., "yassen", "room", "math"
-      
-      // Create a more descriptive title
-      title = `${action} ${target}`.trim();
-      
-      // Create a rich, descriptive description
-      const descriptionParts = [];
-      
-      // Add context from the original message
-      const originalContext = userMessage.replace(implicitTaskMatch, '').trim();
-      if (originalContext) {
-        descriptionParts.push(originalContext);
-      }
-      
-      // Add time details
-      const timeDetails = [];
-      if (deadline) {
-        const date = new Date(deadline);
-        const today = new Date();
-        const tomorrow = new Date(today);
-        tomorrow.setDate(today.getDate() + 1);
-        
-        if (date.toDateString() === today.toDateString()) {
-          timeDetails.push('today');
-        } else if (date.toDateString() === tomorrow.toDateString()) {
-          timeDetails.push('tomorrow');
-        } else {
-          timeDetails.push(`on ${date.toLocaleDateString()}`);
-        }
-      }
-      
-      if (starttime && endtime) {
-        const start = new Date(starttime);
-        const end = new Date(endtime);
-        timeDetails.push(`from ${start.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})} to ${end.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}`);
-      } else if (starttime) {
-        const start = new Date(starttime);
-        timeDetails.push(`at ${start.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}`);
-      }
-      
-      // Add priority context
-      if (priority !== undefined) {
-        const priorityText = ['Low', 'Medium', 'High', 'Urgent'][priority];
-        timeDetails.push(`Priority: ${priorityText}`);
-      }
-      
-      // Combine all parts for a rich description
-      if (timeDetails.length > 0) {
-        descriptionParts.push(`Schedule: ${timeDetails.join(', ')}`);
-      }
-      
-      // Add action-specific context
-      const actionContext = {
-        'call': 'Make sure to have all necessary information ready before calling',
-        'text': 'Send a clear and concise message',
-        'email': 'Draft a professional email with all relevant details',
-        'meet': 'Prepare agenda and any materials needed for the meeting',
-        'study': 'Find a quiet place and gather all study materials',
-        'work on': 'Set aside dedicated time and minimize distractions',
-        'clean': 'Gather cleaning supplies and plan the cleaning approach',
-        'buy': 'Check if you have the budget and make a shopping list',
-        'cook': 'Gather ingredients and check recipe requirements',
-        'exercise': 'Wear appropriate clothing and warm up properly'
-      };
-      
-      if (actionContext[action.toLowerCase()]) {
-        descriptionParts.push(actionContext[action.toLowerCase()]);
-      }
-      
-      // Combine all description parts
-      if (descriptionParts.length > 0) {
-        description = descriptionParts.join('. ');
-      } else {
-        description = `Complete the task: ${action} ${target}`;
-      }
-    }
+  for (const p of patterns) {
+    const m = userMessage.match(p);
+    if (!m?.[1]) continue;
+    const raw = m[1].trim();
+    const folders = await getTaskFolders(userId);
+    const hit = folders.find((f) => f.name.toLowerCase() === raw.toLowerCase());
+    if (hit) return hit.id;
   }
-  
-  // If no title from implicit patterns, try explicit patterns
-  if (!title) {
-    // Look for patterns like "create task called X" or "add task X"
-    const titlePatterns = [
-      /create task (?:called |named |)?["']?([^"']+)["']?/i,
-      /add task (?:called |named |)?["']?([^"']+)["']?/i,
-      /new task (?:called |named |)?["']?([^"']+)["']?/i,
-      /make task (?:called |named |)?["']?([^"']+)["']?/i,
-      /task (?:called |named |)?["']?([^"']+)["']?/i,
-      /remind me to (["']?[^"']+["']?)/i,
-      /reminder to (["']?[^"']+["']?)/i,
-      /schedule (["']?[^"']+["']?)/i,
-      /add (["']?[^"']+["']?) to my tasks/i
-    ];
-    
-    for (const pattern of titlePatterns) {
-      const match = userMessage.match(pattern);
-      if (match && match[1]) {
-        title = match[1].trim();
-        break;
-      }
-    }
-  }
-  
-  // If no title found, try to extract from AI response
-  if (!title) {
-    // Look for quoted text in AI response
-    const quotedMatch = aiResponse.match(/["']([^"']+)["']/);
-    if (quotedMatch) {
-      title = quotedMatch[1].trim();
-    }
-  }
-  
-  // If still no title, create a clean title from the user message
-  if (!title) {
-    // Remove time/date words and create a clean title
-    const cleanMessage = userMessage
-      .replace(/\b(today|tomorrow|yesterday|morning|afternoon|evening|night|am|pm|at|from|to|between|until|by)\b/gi, '')
-      .replace(/\b\d{1,2}:\d{2}\b/g, '')
-      .replace(/\b\d{1,2}\s*(am|pm)\b/gi, '')
-      .replace(/\bon\s+\w+\s+\d{1,2}\b/gi, '')
-      .replace(/\bon\s+\d{4}-\d{2}-\d{2}\b/gi, '')
-      .replace(/\s+/g, ' ')
-      .trim();
-    
-    title = cleanMessage;
-  }
-  
-  // If we still don't have a description, create a comprehensive one
-  if (!description) {
-    const descriptionParts = [];
-    
-    // Add the original user message as context
-    descriptionParts.push(`Task: ${userMessage}`);
-    
-    // Add time details
-    const timeDetails = [];
-    if (deadline) {
-      const date = new Date(deadline);
-      const today = new Date();
-      const tomorrow = new Date(today);
-      tomorrow.setDate(today.getDate() + 1);
-      
-      if (date.toDateString() === today.toDateString()) {
-        timeDetails.push('today');
-      } else if (date.toDateString() === tomorrow.toDateString()) {
-        timeDetails.push('tomorrow');
-      } else {
-        timeDetails.push(`on ${date.toLocaleDateString()}`);
-      }
-    }
-    
-    if (starttime && endtime) {
-      const start = new Date(starttime);
-      const end = new Date(endtime);
-      timeDetails.push(`from ${start.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})} to ${end.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}`);
-    } else if (starttime) {
-      const start = new Date(starttime);
-      timeDetails.push(`at ${start.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}`);
-    }
-    
-    if (timeDetails.length > 0) {
-      descriptionParts.push(`Schedule: ${timeDetails.join(', ')}`);
-    }
-    
-    // Add priority context
-    if (priority !== undefined) {
-      const priorityText = ['Low', 'Medium', 'High', 'Urgent'][priority];
-      descriptionParts.push(`Priority: ${priorityText}`);
-    }
-    
-    // Add AI response context if available
-    if (aiResponse && aiResponse !== 'Sorry, I could not get a response from the AI.') {
-      descriptionParts.push(`Notes: ${aiResponse}`);
-    }
-    
-    description = descriptionParts.join('. ');
-  }
-
-  console.log('Extracted task info:', { title, description, deadline, starttime, endtime, priority });
-  
-  return { title, description, deadline, starttime, endtime, priority };
+  return null;
 }
 
-// Detect update intent
-function isUpdateIntent(userMessage: string): boolean {
-  return /(change|update|edit|move|reschedule|make|set|modify)\b/i.test(userMessage);
-}
+type AiPlanTask = {
+  title?: string;
+  description?: string;
+  dayOffset?: number;
+  /** Put this task in a folder; created if missing (matched case-insensitively). */
+  folderName?: string;
+  /** Optional time on that task's calendar day: "14:00", "2pm", or full ISO datetime. */
+  startTime?: string;
+  endTime?: string;
+  priority?: number;
+};
 
-// Add a ref to store the last created/updated task
-let lastBotTask: { id: string, title: string } | null = null;
+type AiPlanJson = {
+  /** Folder names to ensure exist (empty ok). Tasks may also set folderName per row. */
+  newFolders?: string[];
+  tasks?: AiPlanTask[];
+  /** Short, conversational acknowledgment — no bullet essay. */
+  reply?: string;
+};
 
-// Extract task title for update (looks for quoted text or after keywords)
-function extractTaskTitleForUpdate(userMessage: string): string | undefined {
-  const contextualPhrases = [
-    'the last task', 'the task you just made', 'the task you just created', 'that one', 'the recent task', 'the previous task', 'the latest task', 'the new task', 'the one you just made', 'the one you just created', 'it', 'this task', 'that task'
-  ];
-  for (const phrase of contextualPhrases) {
-    if (userMessage.toLowerCase().includes(phrase)) {
-      return 'CONTEXTUAL_REFERENCE';
-    }
+const DEFAULT_EXAM_PREP_FOLDER = 'Exam prep';
+
+/** Model forgot folders but user clearly asked for one bucket for exams — assign a single folder. */
+function shouldDefaultSingleExamFolder(
+  userMessage: string,
+  tasks: AiPlanTask[],
+  parsed: AiPlanJson,
+): boolean {
+  const m = userMessage.toLowerCase();
+  const wantsExamBundle =
+    /\b(exam|exams|midterm|finals?)\b/.test(m) &&
+    /\b(folder|folders|group|grouped|together)\b/.test(m);
+  if (!wantsExamBundle) return false;
+  if (Array.isArray(parsed.newFolders) && parsed.newFolders.some((n) => typeof n === 'string' && n.trim())) {
+    return false;
   }
-  // Try quoted
-  const quoted = userMessage.match(/['"]([^'"]+)['"]/);
-  if (quoted) return quoted[1];
-  
-  // Try after keywords - improved regex to capture more text
-  const match = userMessage.match(/(?:change|update|edit|move|reschedule|make|set|modify)\s+(.+?)(?:\s+to\s+|\s+as\s+|\s+with\s+|\s+priority\s+|\s+deadline\s+|\s+time\s+|\s+description\s+|\s+status\s+|\s+$)/i);
-  if (match) {
-    const extracted = match[1].trim();
-    // Handle contextual references
-    if (extracted.toLowerCase().includes('the task') || 
-        extracted.toLowerCase().includes('last task') || 
-        extracted.toLowerCase().includes('recent task') ||
-        extracted.toLowerCase().includes('it just made') ||
-        extracted.toLowerCase().includes('just created')) {
-      return 'CONTEXTUAL_REFERENCE'; // Special marker for contextual reference
+  if (tasks.some((t) => t.folderName && String(t.folderName).trim())) return false;
+  return true;
+}
+
+async function createTasksFromAiPlan(
+  userMessage: string,
+  userId: string,
+  onTaskCreated?: () => void,
+): Promise<{ text: string; suggestions: string[] } | null> {
+  if (!getOpenAIKey()) return null;
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), API_CONFIG.timeout + 8000);
+    const res = await openaiChatCompletions(
+      {
+        messages: [
+          {
+            role: 'system',
+            content: `Output ONLY valid JSON with this exact shape:
+{"newFolders":["optional names of folders to create"],"tasks":[{"title":"string","description":"string","dayOffset":0,"folderName":"optional","startTime":"optional","endTime":"optional","priority":0}],"reply":"string"}
+
+Rules:
+- You are helping someone who may be stressed. In "reply": sound human, warm, brief (2–5 short sentences). Acknowledge what they said, say what you grouped or scheduled, no bullet lists unless they asked for a list.
+- "newFolders": folder names to create up front. If they want one bucket for several exams (e.g. "group my exams in a folder"), use ONE folder name like "Exam prep" and set the same folderName on every task. If they want a folder per subject, use multiple newFolders / per-task folderName instead.
+- dayOffset: 0 = today, 1 = tomorrow, … up to 14. If the user gave specific days/times, set dayOffset and/or use full ISO in startTime/endTime on that calendar day.
+- startTime / endTime: optional. Use clock form "HH:MM" or "9am"/"2:30pm" for that task's day, OR full ISO "YYYY-MM-DDTHH:mm:ss" if you need an exact instant.
+- priority: optional 0–3 (0 low … 3 urgent).
+- Max 12 tasks. Titles must be concrete (e.g. "Physics — mechanics drill 40m").
+- Respect scheduling preferences they stated (mornings only, one subject per day, lighter weekends, etc.).`,
+          },
+          { role: 'user', content: userMessage },
+        ],
+        temperature: 0.55,
+        max_tokens: 1100,
+        response_format: { type: 'json_object' },
+      },
+      controller.signal,
+    );
+    clearTimeout(timeoutId);
+    if (!res.ok) return null;
+    const data = await res.json();
+    const raw = data.choices?.[0]?.message?.content;
+    if (!raw || typeof raw !== 'string') return null;
+    const parsed = JSON.parse(raw) as AiPlanJson;
+    const tasks = parsed.tasks;
+    if (!Array.isArray(tasks) || tasks.length === 0) return null;
+
+    if (shouldDefaultSingleExamFolder(userMessage, tasks, parsed)) {
+      const bucket = DEFAULT_EXAM_PREP_FOLDER;
+      for (const t of tasks) {
+        if (!t.folderName?.trim()) t.folderName = bucket;
+      }
+      if (!Array.isArray(parsed.newFolders) || parsed.newFolders.length === 0) {
+        parsed.newFolders = [bucket];
+      }
     }
-    return extracted;
+
+    const namesToEnsure = new Set<string>();
+    if (Array.isArray(parsed.newFolders)) {
+      for (const n of parsed.newFolders) {
+        if (typeof n === 'string' && n.trim()) namesToEnsure.add(n.trim());
+      }
+    }
+    for (const t of tasks) {
+      if (t.folderName && typeof t.folderName === 'string' && t.folderName.trim()) {
+        namesToEnsure.add(t.folderName.trim());
+      }
+    }
+    for (const name of namesToEnsure) {
+      await getOrCreateTaskFolderByName(userId, name);
+    }
+
+    const messageFolderFallback = await resolveFolderIdFromMessage(userMessage, userId);
+    let created = 0;
+    for (const t of tasks) {
+      const title = (t.title || '').trim();
+      if (!title) continue;
+      const off =
+        typeof t.dayOffset === 'number' && t.dayOffset >= 0
+          ? Math.min(Math.floor(t.dayOffset), 14)
+          : 0;
+      const deadline = computePlanTaskDeadlineYmd(t, off);
+      let folderId: string | null = null;
+      if (t.folderName && typeof t.folderName === 'string' && t.folderName.trim()) {
+        const f = await getOrCreateTaskFolderByName(userId, t.folderName.trim());
+        folderId = f.id;
+      } else if (messageFolderFallback) {
+        folderId = messageFolderFallback;
+      }
+      const startIso = normalizePlanSlotToIso(deadline, t.startTime);
+      const endIso = normalizePlanSlotToIso(deadline, t.endTime);
+      const pr =
+        typeof t.priority === 'number' && t.priority >= 0 && t.priority <= 3
+          ? (Math.floor(t.priority) as TaskPriority)
+          : undefined;
+      await offlineTaskService.createTask(
+        {
+          title,
+          description: (t.description || '').trim(),
+          deadline,
+          ...(folderId ? { folder_id: folderId } : {}),
+          ...(startIso ? { startTime: startIso } : {}),
+          ...(endIso ? { endTime: endIso } : {}),
+          ...(pr !== undefined ? { priority: pr } : {}),
+        },
+        userId,
+      );
+      created += 1;
+    }
+    if (created === 0) return null;
+    if (onTaskCreated) setTimeout(onTaskCreated, 100);
+    const reply =
+      parsed.reply?.trim() ||
+      `I lined up ${created} tasks on your calendar — take a look when you can.`;
+    const folderHint =
+      namesToEnsure.size > 0 ? [...namesToEnsure].slice(0, 6).join(', ') : undefined;
+    const text = await naturalizeProdyFacing(userMessage, {
+      kind: 'tasks_planned',
+      userDraft: reply,
+      taskCount: created,
+      folderHint,
+    });
+    return {
+      text,
+      suggestions: ['Show my tasks', 'Break into subtasks', 'Help me prioritize'],
+    };
+  } catch (e) {
+    console.error('createTasksFromAiPlan:', e);
+    return null;
   }
-  
-  return undefined;
 }
 
-// Detect subtask intent
-function isSubtaskIntent(userMessage: string): boolean {
-  const subtaskKeywords = [
-    'subtask', 'break down', 'divide', 'split', 'decompose', 'break into', 
-    'create subtasks', 'make subtasks', 'add subtasks', 'subtasks for',
-    'break this down', 'divide this', 'split this', 'decompose this'
-  ];
-  return subtaskKeywords.some(keyword => userMessage.toLowerCase().includes(keyword));
-}
+let lastBotTask: { id: string; title: string } | null = null;
 
-// AI-powered subtask generation using DeepSeek API
+// AI-powered subtask generation (OpenAI)
 async function generateSubtasksWithAI(parentTaskTitle: string, parentTaskDescription: string, userId: string): Promise<{ title: string; description: string; priority: number }[]> {
   try {
+    if (!getOpenAIKey()) {
+      throw new Error('Missing API key');
+    }
     const prompt = `Please break down the following task into 3-7 logical subtasks that would help complete it effectively:
 
 Task: ${parentTaskTitle}
@@ -601,26 +450,24 @@ Return the subtasks in a structured format.`;
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), API_CONFIG.timeout);
 
-    const response = await fetch(DEEPSEEK_API_URL, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${DEEPSEEK_API_KEY}`
-      },
-      body: JSON.stringify({
-        model: API_CONFIG.model,
+    const response = await openaiChatCompletions(
+      {
         messages: [
-          { role: 'system', content: 'You are a productivity expert who specializes in breaking down complex tasks into manageable subtasks. Always respond with clear, actionable subtasks.' },
-          { role: 'user', content: prompt }
+          {
+            role: 'system',
+            content:
+              'You break work into manageable subtasks. Reply in plain language — short numbered lines or bullets with concrete next actions. No corporate tone.',
+          },
+          { role: 'user', content: prompt },
         ],
         temperature: API_CONFIG.temperature,
         max_tokens: API_CONFIG.max_tokens,
         top_p: API_CONFIG.top_p,
         frequency_penalty: API_CONFIG.frequency_penalty,
-        presence_penalty: API_CONFIG.presence_penalty
-      }),
-      signal: controller.signal
-    });
+        presence_penalty: API_CONFIG.presence_penalty,
+      },
+      controller.signal,
+    );
 
     clearTimeout(timeoutId);
 
@@ -712,35 +559,18 @@ function isConfirmation(message: string) {
 // Track last created task in component state
 let lastCreatedTask: { id: string, title: string, description?: string } | null = null;
 
-// Helper: detect overwhelmed intent
-function isOverwhelmedIntent(message: string) {
-  const keywords = [
-    'overwhelmed', 'too much', 'can\'t handle', 'stressed', 'so many tasks', 'too many tasks',
-    'lost', 'don\'t know where to start', 'anxious', 'panic', 'burnt out', 'burned out', 'exhausted',
-    'help me focus', 'help me prioritize', 'help me organize', 'help me break down', 'need help',
-    'need to focus', 'need to organize', 'need to prioritize', 'need to break down'
-  ];
-  return keywords.some(word => message.toLowerCase().includes(word));
-}
-
-// Helper: detect 'show my tasks' intent
-function isShowTasksIntent(message: string) {
-  const keywords = [
-    'show my tasks', 'list my tasks', 'what are my tasks', 'display my tasks', 'see my tasks', 'show tasks', 'list tasks', 'see tasks', 'display tasks'
-  ];
-  return keywords.some(word => message.toLowerCase().includes(word));
-}
-
-// Helper: detect 'help me prioritize' intent
-function isPrioritizeIntent(userMessage: string) {
-  const keywords = [
-    'help me prioritize', 'prioritize my tasks', 'prioritize tasks', 'prioritize subtasks', 'help prioritize', 'sort tasks', 'sort subtasks', 'order tasks', 'order subtasks', 'which task first', 'which subtask first'
-  ];
-  return keywords.some(word => userMessage.toLowerCase().includes(word));
-}
+type FetchAIStreamCallbacks = {
+  onStreamDelta?: (accumulated: string) => void;
+};
 
 // Text-based task extraction AI response fetcher
-async function fetchAIResponseWithTaskExtraction(userMessage: string, history: { sender: string, text: string }[], userId: string, onTaskCreated?: () => void) {
+async function fetchAIResponseWithTaskExtraction(
+  userMessage: string,
+  history: { sender: string; text: string }[],
+  userId: string,
+  onTaskCreated?: () => void,
+  streamCallbacks?: FetchAIStreamCallbacks,
+) {
   const startTime = Date.now();
   
   try {
@@ -751,199 +581,41 @@ async function fetchAIResponseWithTaskExtraction(userMessage: string, history: {
       return cachedResponse;
     }
 
-    const messages = [
-      { role: 'system', content: 'You are PRODY, a productivity assistant. When users ask you to create or update tasks, respond naturally and helpfully.' },
-      ...history.map(msg => ({
-        role: msg.sender === 'user' ? 'user' : 'assistant',
-        content: msg.text
-      })),
-      { role: 'user', content: userMessage }
-    ];
-
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), API_CONFIG.timeout);
-
-    const apiResponse = await fetch(DEEPSEEK_API_URL, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${DEEPSEEK_API_KEY}`
-      },
-      body: JSON.stringify({
-        model: API_CONFIG.model,
-        messages,
-        temperature: API_CONFIG.temperature,
-        max_tokens: API_CONFIG.max_tokens,
-        top_p: API_CONFIG.top_p,
-        frequency_penalty: API_CONFIG.frequency_penalty,
-        presence_penalty: API_CONFIG.presence_penalty
-      }),
-      signal: controller.signal
-    });
-
-    clearTimeout(timeoutId);
-    
-    if (!apiResponse.ok) {
-      const errorText = await apiResponse.text();
-      console.error('DeepSeek API error:', apiResponse.status, errorText);
-      logPerformance('apiError');
-      const cachedResponse = { text: `Sorry, there was an error with the API (${apiResponse.status}): ${errorText}`, suggestions: [] };
-      cacheResponse(userMessage, cachedResponse);
-      logPerformance('responseTime', Date.now() - startTime);
-      return cachedResponse;
-    }
-    
-    const data = await apiResponse.json();
-    console.log('DeepSeek API response:', JSON.stringify(data, null, 2));
-    const choice = data.choices && data.choices[0];
-    if (!choice) {
-      const cachedResponse = { text: 'Sorry, I could not get a response from the AI.', suggestions: [] };
-      cacheResponse(userMessage, cachedResponse);
-      logPerformance('responseTime', Date.now() - startTime);
-      return cachedResponse;
+    if (!getOpenAIKey()) {
+      return {
+        text: 'Add EXPO_PUBLIC_OPENAI_API_KEY to your .env file and restart Expo.',
+        suggestions: [],
+      };
     }
 
-    // Get AI response
-    const aiResponse = choice.message?.content?.trim() || 'Sorry, I could not get a response from the AI.';
-
-    // --- OVERWHELMED INTENT DETECTION ---
-    if (isOverwhelmedIntent(userMessage)) {
+    const folderNameOnly = parseCreateFolderIntent(userMessage);
+    if (folderNameOnly) {
+      const existing = await getTaskFolders(userId);
+      if (existing.some((f) => f.name.toLowerCase() === folderNameOnly.toLowerCase())) {
+        const text = await naturalizeProdyFacing(userMessage, {
+          kind: 'folder_ready',
+          name: folderNameOnly,
+          duplicate: true,
+        });
+        const response = { text, suggestions: ['Show my tasks', 'Create a task'] };
+        cacheResponse(userMessage, response);
+        return response;
+      }
+      const folder = await addTaskFolder(userId, folderNameOnly);
+      const text = await naturalizeProdyFacing(userMessage, {
+        kind: 'folder_ready',
+        name: folder.name,
+      });
       const response = {
-        text: "I'm here to help! Would you like me to help you prioritize your tasks or break them down into smaller steps?",
-        suggestions: ["Help me prioritize", "Break down my tasks", "Show my tasks"]
+        text,
+        suggestions: [`Add a task in folder ${folder.name}`, 'Show my tasks'],
       };
       cacheResponse(userMessage, response);
       return response;
     }
 
-    // --- UPDATE LOGIC ---
-    if (isUpdateIntent(userMessage)) {
-      const updateTitle = extractTaskTitleForUpdate(userMessage);
-      let allTasks = await offlineTaskService.getTasks(userId);
-      let taskToUpdate;
-      if (updateTitle === 'CONTEXTUAL_REFERENCE' && lastBotTask) {
-        // Use the last bot-created task
-        taskToUpdate = allTasks.find(t => t.id === lastBotTask.id);
-      } else if (updateTitle === 'CONTEXTUAL_REFERENCE') {
-        // Fallback: most recent task
-        if (allTasks.length > 0) {
-          allTasks = allTasks.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
-          taskToUpdate = allTasks[0];
-        }
-      } else {
-        taskToUpdate = allTasks.find(t => t.title.toLowerCase() === updateTitle?.toLowerCase());
-      }
-      
-      if (taskToUpdate) {
-        // Extract new details
-        const updateInfo = extractTaskFromResponse(userMessage, aiResponse);
-        const updates: any = {};
-        if (updateInfo?.deadline) updates.deadline = updateInfo.deadline;
-        if (updateInfo?.starttime) updates.starttime = updateInfo.starttime;
-        if (updateInfo?.endtime) updates.endtime = updateInfo.endtime;
-        if (updateInfo?.priority !== undefined) updates.priority = updateInfo.priority as import('../../types/task').TaskPriority;
-        if (updateInfo?.description) updates.description = updateInfo.description;
-        if (Object.keys(updates).length > 0) {
-          await offlineTaskService.updateTask(taskToUpdate.id, updates);
-          if (onTaskCreated) setTimeout(onTaskCreated, 100);
-          return { text: `✅ Task "${taskToUpdate.title}" updated!`, suggestions: ["Break into subtasks", "Set a deadline", "Add to focus session"] };
-        } else {
-          return { text: `No update fields detected for task "${taskToUpdate.title}".`, suggestions: [] };
-        }
-      } else {
-        if (updateTitle === 'CONTEXTUAL_REFERENCE') {
-          return { text: `Could not find any recent tasks to update.`, suggestions: [] };
-        } else {
-          return { text: `Could not find a task titled "${updateTitle}" to update.`, suggestions: [] };
-        }
-      }
-    }
-    // --- END UPDATE LOGIC ---
-
-    // --- SUBTASK CREATION LOGIC ---
-    if (isSubtaskIntent(userMessage)) {
-      try {
-        // Extract parent task title from user message
-        let parentTaskTitle = '';
-        
-        // Look for patterns like "subtask for X" or "break down X"
-        const titlePatterns = [
-          /(?:subtask|break down|divide|split|decompose)\s+(?:for\s+)?["']?([^"']+)["']?/i,
-          /(?:subtask|break down|divide|split|decompose)\s+(?:called\s+)?["']?([^"']+)["']?/i
-        ];
-        
-        for (const pattern of titlePatterns) {
-          const match = userMessage.match(pattern);
-          if (match && match[1]) {
-            parentTaskTitle = match[1].trim();
-            break;
-          }
-        }
-        
-        // If no explicit title found, try to extract from the message
-        if (!parentTaskTitle) {
-          // Remove subtask keywords and clean up the message
-          const cleanMessage = userMessage
-            .replace(/\b(subtask|break down|divide|split|decompose|create|make|add)\b/gi, '')
-            .replace(/\b(for|called|named)\b/gi, '')
-            .replace(/\s+/g, ' ')
-            .trim();
-          
-          if (cleanMessage) {
-            parentTaskTitle = cleanMessage;
-          }
-        }
-        
-        if (parentTaskTitle) {
-          const allTasks = await offlineTaskService.getTasks(userId);
-          const parentTask = allTasks.find(t => 
-            t.title.toLowerCase().includes(parentTaskTitle.toLowerCase()) ||
-            parentTaskTitle.toLowerCase().includes(t.title.toLowerCase())
-          );
-          
-          if (parentTask) {
-            // Generate subtasks using AI
-            const subtasks = await generateSubtasksWithAI(parentTask.title, parentTask.description || '', userId);
-            
-            const createdSubtasks = [];
-            for (const subtask of subtasks) {
-              const created = await offlineTaskService.createTask({
-                title: subtask.title,
-                description: subtask.description,
-                priority: subtask.priority as import('../../types/task').TaskPriority,
-                parent_task_id: parentTask.id
-              }, userId);
-              createdSubtasks.push(created);
-            }
-            
-            if (onTaskCreated) setTimeout(onTaskCreated, 100);
-            
-            const subtaskList = createdSubtasks.map(s => `• ${s.title}`).join('\n');
-            const response = { text: `✅ Created ${createdSubtasks.length} AI-generated subtasks for "${parentTask.title}":\n\n${subtaskList}\n\n${aiResponse}`, suggestions: ["Break into subtasks", "Set a deadline", "Add to focus session"] };
-            cacheResponse(userMessage, response);
-            return response;
-          } else {
-            const response = { text: `❌ Could not find a task titled "${parentTaskTitle}". Please make sure the task exists first.`, suggestions: [] };
-            cacheResponse(userMessage, response);
-            return response;
-          }
-        } else {
-          const response = { text: `❌ Please specify which task you'd like me to create subtasks for. For example: "Create subtasks for my project" or "Break down my homework".`, suggestions: [] };
-          cacheResponse(userMessage, response);
-          return response;
-        }
-      } catch (e) {
-        console.error('Subtask creation error:', e);
-        const response = { text: `${aiResponse}\n\n❌ I couldn't create the subtasks automatically. Please try again.`, suggestions: [] };
-        cacheResponse(userMessage, response);
-        return response;
-      }
-    }
-    // --- END SUBTASK CREATION LOGIC ---
-
-    // If user confirms after a task was just created, break it down
     if (lastCreatedTask && isConfirmation(userMessage)) {
-      // Generate subtasks for the last created task
+      const parentTitleForNaturalize = lastCreatedTask.title;
       const subtasks = await generateSubtasksWithAI(lastCreatedTask.title, lastCreatedTask.description || '', userId);
       const createdSubtasks = [];
       for (const subtask of subtasks) {
@@ -956,202 +628,63 @@ async function fetchAIResponseWithTaskExtraction(userMessage: string, history: {
         createdSubtasks.push(created);
       }
       lastCreatedTask = null;
-      const subtaskList = createdSubtasks.map(s => `• ${s.title}`).join('\n');
-      const response = { text: `✅ Here are some subtasks for your task:\n${subtaskList}`, suggestions: ["Break into subtasks", "Set a deadline", "Add to focus session"] };
-      cacheResponse(userMessage, response);
-      return response;
-    }
-
-    // --- SHOW MY TASKS INTENT ---
-    if (isShowTasksIntent(userMessage)) {
-      const allTasks = await offlineTaskService.getTasks(userId);
-      if (!allTasks || allTasks.length === 0) {
-        const response = { text: "You have no tasks right now!", suggestions: ["Create a task"] };
-        cacheResponse(userMessage, response);
-        return response;
-      }
-      // Group subtasks by parent
-      const parentTasks = allTasks.filter(t => !t.parent_task_id);
-      const subtaskCounts: Record<string, number> = {};
-      allTasks.forEach(t => {
-        if (t.parent_task_id) {
-          subtaskCounts[t.parent_task_id] = (subtaskCounts[t.parent_task_id] || 0) + 1;
-        }
+      const stepTitles = createdSubtasks.map((s) => s.title);
+      const text = await naturalizeProdyFacing(userMessage, {
+        kind: 'subtasks_added',
+        parentTitle: parentTitleForNaturalize,
+        stepTitles,
       });
-      const lines = parentTasks.map(t => `• ${t.title} (${subtaskCounts[t.id] || 0} subtasks)`);
-      const response = {
-        text: `Here are your tasks:\n${lines.join("\n")}`,
-        suggestions: ["Help me prioritize", "Break into subtasks", "Set a deadline"]
-      };
+      const response = { text, suggestions: ["Break into subtasks", "Set a deadline", "Add to focus session"] };
       cacheResponse(userMessage, response);
+      logPerformance('responseTime', Date.now() - startTime);
       return response;
     }
 
-    // --- PRIORITIZE INTENT ---
-    if (isPrioritizeIntent(userMessage)) {
-      const allTasks = await offlineTaskService.getTasks(userId);
-      if (!allTasks || allTasks.length === 0) {
-        const response = { text: "You have no tasks to prioritize!", suggestions: ["Create a task"] };
-        cacheResponse(userMessage, response);
-        return response;
-      }
-      // Get parent tasks (not subtasks)
-      const parentTasks = allTasks.filter(t => !t.parent_task_id);
-      // Numbered list for display
-      const lines = parentTasks.map((t, i) => `${i + 1}. ${t.title} (${allTasks.filter(st => st.parent_task_id === t.id).length} subtasks)`);
-      // Quick replies for each task and all tasks
-      const suggestions = [
-        "Prioritize all tasks",
-        ...parentTasks.map((t, i) => `Prioritize task ${i + 1}`)
-      ];
-      // Parse if user selected a specific task
-      const match = userMessage.match(/prioritize task (\d+)/i);
-      if (match) {
-        const idx = parseInt(match[1], 10) - 1;
-        if (idx >= 0 && idx < parentTasks.length) {
-          const selectedTask = parentTasks[idx];
-          const subtasks = allTasks.filter(t => t.parent_task_id === selectedTask.id);
-          if (subtasks.length === 0) {
-            const response = {
-              text: `Task '${selectedTask.title}' has no subtasks to prioritize.`,
-              suggestions: ["Break into subtasks", "Show my tasks"]
-            };
-            cacheResponse(userMessage, response);
-            return response;
-          }
-          // Numbered list of subtasks
-          const subLines = subtasks
-            .slice()
-            .sort((a, b) => (b.priority || 0) - (a.priority || 0))
-            .map((t, i) => `${i + 1}. ${t.title} (Priority: ${['Low','Medium','High','Urgent'][t.priority||0]})`);
-          const response = {
-            text: `Here are the prioritized subtasks for '${selectedTask.title}':\n${subLines.join("\n")}`,
-            suggestions: ["Show my tasks"]
-          };
-          cacheResponse(userMessage, response);
-          return response;
-        } else {
-          const response = {
-            text: `Invalid task number. Please choose a valid task to prioritize.\n\nHere are your tasks:\n${lines.join("\n")}`,
-            suggestions
-          };
-          cacheResponse(userMessage, response);
-          return response;
-        }
-      }
-      // Prioritize all tasks
-      if (
-        userMessage.toLowerCase().includes('prioritize all tasks') ||
-        userMessage.toLowerCase().includes('prioritize my tasks') ||
-        userMessage.toLowerCase().includes('prioritize tasks')
-      ) {
-        const sorted = parentTasks.slice().sort((a, b) => (b.priority || 0) - (a.priority || 0));
-        const sortedLines = sorted.map((t, i) => `${i + 1}. ${t.title} (Priority: ${['Low','Medium','High','Urgent'][t.priority||0]})`);
-        const response = {
-          text: `Here are your prioritized tasks:\n${sortedLines.join("\n")}`,
-          suggestions: ["Show my tasks"]
-        };
-        cacheResponse(userMessage, response);
-        return response;
-      }
-      // Default: show numbered list and ask for selection
-      const response = {
-        text: `Here are your tasks:\n${lines.join("\n")}\n\nWhich task would you like to prioritize, or would you like to prioritize all tasks?`,
-        suggestions
-      };
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), Math.min(120000, API_CONFIG.timeout * 4));
+    try {
+      const agentHistory = history.map((m) => ({
+        sender: (m.sender === 'user' ? 'user' : 'bot') as 'user' | 'bot',
+        text: m.text,
+      }));
+      const agentReply = await runProdyToolAgentLoop({
+        userMessage,
+        history: agentHistory,
+        systemPrompt: buildProdySystemPrompt(userMessage),
+        userId,
+        signal: controller.signal,
+        temperature: API_CONFIG.temperature,
+        maxTokens: API_CONFIG.max_tokens,
+        hooks: {
+          onTaskMutated: onTaskCreated,
+          registerLastBotTask: (t) => {
+            lastBotTask = t;
+          },
+          registerLastCreatedTask: (t) => {
+            lastCreatedTask = t;
+            lastBotTask = { id: t.id, title: t.title };
+          },
+          runStructuredPlan: async (msg) => {
+            const plan = await createTasksFromAiPlan(msg, userId, onTaskCreated);
+            if (!plan) return null;
+            return { ok: true, replyText: plan.text, suggestions: plan.suggestions };
+          },
+        },
+        onStreamDelta: streamCallbacks?.onStreamDelta,
+      });
+      cacheResponse(userMessage, agentReply);
+      logPerformance('responseTime', Date.now() - startTime);
+      return agentReply;
+    } catch (e) {
+      console.error('Prody tool agent error:', e);
+      logPerformance('apiError');
+      const response = { text: 'Sorry, there was an error connecting to the AI.', suggestions: [] };
       cacheResponse(userMessage, response);
+      logPerformance('responseTime', Date.now() - startTime);
       return response;
+    } finally {
+      clearTimeout(timeoutId);
     }
-
-    // Try to extract task information from the response
-    const taskInfo = extractTaskFromResponse(userMessage, aiResponse);
-    
-    // If no task was extracted but user made an actionable request, create a basic task
-    if (!taskInfo) {
-      const actionableKeywords = ['tidy', 'clean', 'organize', 'study', 'read', 'write', 'work on', 'finish', 'buy', 'purchase', 'get', 'call', 'text', 'email', 'message', 'meet', 'go to', 'visit', 'attend'];
-      const isActionable = actionableKeywords.some(keyword => userMessage.toLowerCase().includes(keyword));
-      if (isActionable) {
-        // Ask for clarification if the message is too vague
-        if (userMessage.trim().split(' ').length < 4) {
-          const response = { text: "Could you provide more details about the task? For example, what is the title, description, or deadline?", suggestions: [] };
-          cacheResponse(userMessage, response);
-          return response;
-        }
-        console.log('Creating fallback task for actionable request:', userMessage);
-        try {
-          const today = new Date().toISOString().split('T')[0]; // YYYY-MM-DD format
-          const created = await offlineTaskService.createTask({ 
-            title: userMessage.trim(), 
-            description: aiResponse.trim(),
-            deadline: today, // Add today as default deadline
-          }, userId);
-          console.log('Fallback task created successfully:', created);
-          
-          // Trigger a refresh by navigating to refresh the other screens
-          setTimeout(() => {
-            if (onTaskCreated) {
-              console.log('Triggering refresh callback for fallback task');
-              onTaskCreated();
-            }
-          }, 100);
-          
-          const response = { text: `✅ I've created a task for you: "${created.title}"\n\n${aiResponse}`, suggestions: ["Break into subtasks", "Set a deadline", "Add to focus session"] };
-          cacheResponse(userMessage, response);
-          return response;
-        } catch (e) {
-          console.error('Fallback task creation error:', e);
-          const response = { text: 'Sorry, there was an error creating the task. Please try again later.', suggestions: [] };
-          cacheResponse(userMessage, response);
-          return response;
-        }
-      } else {
-        // If not actionable, ask for clarification
-        const response = { text: "Could you clarify what you want to do? For example, do you want to create a task, update one, or something else?", suggestions: [] };
-        cacheResponse(userMessage, response);
-        return response;
-      }
-    }
-    
-    if (taskInfo) {
-      try {
-        console.log('Creating task with info:', taskInfo);
-        const created = await offlineTaskService.createTask({ 
-          title: taskInfo.title, 
-          description: taskInfo.description,
-          ...(taskInfo.deadline ? { deadline: taskInfo.deadline } : {}),
-          ...(taskInfo.starttime ? { starttime: taskInfo.starttime } : {}),
-          ...(taskInfo.endtime ? { endtime: taskInfo.endtime } : {}),
-          ...(taskInfo.priority !== undefined ? { priority: taskInfo.priority as import('../../types/task').TaskPriority } : {}),
-        }, userId);
-        console.log('Task created successfully:', created);
-        
-        // Store the last bot-created task
-        lastBotTask = { id: created.id, title: created.title };
-        lastCreatedTask = { id: created.id, title: created.title, description: created.description };
-        
-        // Trigger a refresh by navigating to refresh the other screens
-        setTimeout(() => {
-          if (onTaskCreated) {
-            console.log('Triggering refresh callback');
-            onTaskCreated();
-          }
-        }, 100);
-        
-        const response = { text: `✅ Task created successfully: "${created.title}".\nWould you like me to break this task down into subtasks?`, suggestions: ["Break into subtasks", "Set a deadline", "Add to focus session"] };
-        cacheResponse(userMessage, response);
-        return response;
-      } catch (e) {
-        console.error('Task creation error:', e);
-        const response = { text: `${aiResponse}\n\n❌ I couldn't create the task automatically. Please try again.`, suggestions: [] };
-        cacheResponse(userMessage, response);
-        return response;
-      }
-    }
-    
-    const response = { text: aiResponse, suggestions: [] };
-    cacheResponse(userMessage, response);
-    logPerformance('responseTime', Date.now() - startTime);
-    return response;
   } catch (err) {
     console.error('API call error:', err);
     logPerformance('apiError');
@@ -1191,6 +724,7 @@ function stripMarkdown(text: string): string {
 
 // Animated Typing Indicator (three bouncing dots)
 const TypingIndicator = () => {
+  const { colors: dotC } = useAppTheme();
   const dot1 = React.useRef(new Animated.Value(0)).current;
   const dot2 = React.useRef(new Animated.Value(0)).current;
   const dot3 = React.useRef(new Animated.Value(0)).current;
@@ -1217,7 +751,7 @@ const TypingIndicator = () => {
         <Animated.View
           key={i}
           style={{
-            width: 7, height: 7, borderRadius: 3.5, backgroundColor: '#7B61FF', marginHorizontal: 2,
+            width: 7, height: 7, borderRadius: 3.5, backgroundColor: dotC.amber, marginHorizontal: 2,
             transform: [{ translateY: dot }],
           }}
         />
@@ -1230,28 +764,49 @@ const TypingIndicator = () => {
 const RESPONSE_CACHE = new Map<string, { text: string; suggestions: string[]; timestamp: number }>();
 const CACHE_DURATION = 5 * 60 * 1000; // 5 minutes
 
-// Common response patterns that can be cached
-const COMMON_PATTERNS = [
-  { pattern: /\b(hi|hello|hey)\b/i, response: "Hello! How can I help you today?", suggestions: ["Create a task", "Show my tasks", "Help me prioritize"] },
-  { pattern: /\b(thanks|thank you)\b/i, response: "You're welcome! Is there anything else I can help you with?", suggestions: ["Create a task", "Show my tasks"] },
-  { pattern: /\b(bye|goodbye)\b/i, response: "Goodbye! Have a productive day!", suggestions: [] },
-  { pattern: /\b(help|what can you do)\b/i, response: "I can help you:\n• Create and manage tasks\n• Break down complex tasks into subtasks\n• Prioritize your workload\n• Schedule your time\n\nJust tell me what you need!", suggestions: ["Create a task", "Show my tasks", "Help me prioritize"] }
-];
+/** Very short, exact-intent messages only — never match "help me with my exams" (that must hit GPT). */
+function matchCannedChatResponse(trimmed: string): { text: string; suggestions: string[] } | null {
+  const t = trimmed.trim();
+  if (t.length > 56) return null;
+
+  if (/^(hi|hello|hey)(\s+there)?(\s+prody)?[!?.,\s]*$/i.test(t)) {
+    return {
+      text: "Hey — what's going on? Tell me what you're trying to get done.",
+      suggestions: ['Create a task', 'Show my tasks', 'Help me prioritize'],
+    };
+  }
+  if (/^(thanks|thank you)([!?.,\s]*)$/i.test(t) || /^thanks\s+so\s+much[!?.,\s]*$/i.test(t)) {
+    return {
+      text: "Anytime. Ping me if something else pops up.",
+      suggestions: ['Create a task', 'Show my tasks'],
+    };
+  }
+  if (/^(bye|goodbye)[!?.,\s]*$/i.test(t)) {
+    return { text: 'Later — go get something small done and call it a win.', suggestions: [] };
+  }
+  if (/^(help|what can you do)(\s+me)?\??\s*$/i.test(t)) {
+    return {
+      text:
+        "I'm here to untangle your workload: I can break a messy project into tasks, group stuff into folders, and put things on your calendar (no date from you usually means today). Voice works too — talk like you normally would. What do you want to tackle?",
+      suggestions: ['Create a task', 'Break this into tasks', 'Show my tasks'],
+    };
+  }
+  return null;
+}
 
 // Check cache for common responses
 function getCachedResponse(userMessage: string): { text: string; suggestions: string[] } | null {
   const now = Date.now();
-  
-  // Check for common patterns first
-  for (const { pattern, response, suggestions } of COMMON_PATTERNS) {
-    if (pattern.test(userMessage)) {
-      logPerformance('cacheHit');
-      return { text: response, suggestions };
-    }
+  const trimmed = userMessage.trim();
+
+  const canned = matchCannedChatResponse(trimmed);
+  if (canned) {
+    logPerformance('cacheHit');
+    return canned;
   }
-  
+
   // Check cache
-  const cacheKey = userMessage.toLowerCase().trim();
+  const cacheKey = trimmed.toLowerCase();
   const cached = RESPONSE_CACHE.get(cacheKey);
   if (cached && (now - cached.timestamp) < CACHE_DURATION) {
     logPerformance('cacheHit');
@@ -1320,6 +875,8 @@ function getAverageResponseTime(): number {
 }
 
 export default function ChatScreen() {
+  const { colors: c } = useAppTheme();
+  const styles = useMemo(() => createChatStyles(c), [c]);
   const router = useRouter();
   const { user } = useAuth();
   const params = useLocalSearchParams();
@@ -1330,7 +887,17 @@ export default function ChatScreen() {
   const speechRef = useRef<{ id: string | null }>({ id: null });
   // For quick reply button debounce
   const quickReplyLock = useRef(false);
-  const [keyboardVisible, setKeyboardVisible] = useState(false);
+  const recordingRef = useRef<Audio.Recording | null>(null);
+  const lastSoundTimeRef = useRef<number | null>(null);
+  const heardSpeechRef = useRef(false);
+  const autoSilenceFinishRef = useRef(false);
+  const finishVoiceRecordingRef = useRef<() => Promise<void>>(async () => {});
+  /** User closed overlay or left tab — skip applying AI/TTS from an in-flight voice turn. */
+  const voiceOverlayCancelledRef = useRef(false);
+  const insets = useSafeAreaInsets();
+  const [voiceSession, setVoiceSession] = useState<
+    null | 'listening' | 'thinking' | 'speaking'
+  >(null);
 
   // Get username for personalized greeting
   const username = user?.user_metadata?.username || user?.email?.split('@')[0] || 'there';
@@ -1352,26 +919,35 @@ export default function ChatScreen() {
     flatListRef.current?.scrollToEnd({ animated: true });
   }, [messages]);
 
+  useEffect(() => {
+    void preloadBotVoice();
+  }, []);
+
+  useFocusEffect(
+    useCallback(() => {
+      return () => {
+        voiceOverlayCancelledRef.current = true;
+        setVoiceSession(null);
+        Speech.stop();
+        const rec = recordingRef.current;
+        if (rec) {
+          try {
+            rec.setOnRecordingStatusUpdate(null);
+          } catch {
+            /* ignore */
+          }
+          recordingRef.current = null;
+          void rec.stopAndUnloadAsync().catch(() => {});
+        }
+        void Audio.setAudioModeAsync({ allowsRecordingIOS: false }).catch(() => {});
+      };
+    }, []),
+  );
+
   // Stop speech when unmounting or when a new message is played
   React.useEffect(() => {
     return () => {
       Speech.stop();
-    };
-  }, []);
-
-  // Track keyboard visibility to adjust input/nav positioning
-  React.useEffect(() => {
-    const showSub = Keyboard.addListener(
-      Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow',
-      () => setKeyboardVisible(true)
-    );
-    const hideSub = Keyboard.addListener(
-      Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide',
-      () => setKeyboardVisible(false)
-    );
-    return () => {
-      showSub.remove();
-      hideSub.remove();
     };
   }, []);
 
@@ -1384,7 +960,7 @@ export default function ChatScreen() {
       Speech.stop(); // Stop any previous speech
       setSpeakingId(id);
       speechRef.current.id = id;
-      Speech.speak(text, {
+      speakBot(stripMarkdown(text), {
         onDone: () => {
           if (speechRef.current.id === id) setSpeakingId(null);
         },
@@ -1404,15 +980,26 @@ export default function ChatScreen() {
     setMessages(prev => [
       ...prev,
       { id: String(prev.length + 1), sender: 'user', text: aiRequest },
-      { id: String(prev.length + 2), sender: 'bot', text: 'Prody is thinking...', loading: true },
+      { id: String(prev.length + 2), sender: 'bot', text: 'Thinking...', loading: true },
     ]);
     
-    const aiReplyRaw = await fetchAIResponseWithTaskExtraction(aiRequest, [
-      ...messages,
-      { sender: 'user', text: aiRequest }
-    ], user.id, () => {
-      router.setParams({ refresh: Date.now().toString() });
-    });
+    const aiReplyRaw = await fetchAIResponseWithTaskExtraction(
+      aiRequest,
+      [...messages, { sender: 'user', text: aiRequest }],
+      user.id,
+      () => {
+        router.setParams({ refresh: Date.now().toString() });
+      },
+      {
+        onStreamDelta: (partial) => {
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.loading ? { ...m, text: partial.trim() ? partial : 'Thinking...' } : m,
+            ),
+          );
+        },
+      },
+    );
     
     const aiReply = typeof aiReplyRaw === 'string' ? { text: aiReplyRaw, suggestions: [] } : aiReplyRaw;
     setMessages(prev => prev.map(m =>
@@ -1439,21 +1026,256 @@ export default function ChatScreen() {
     setMessages(prev => [
       ...prev,
       { id: String(prev.length + 1), sender: 'user', text: userMsg },
-      { id: String(prev.length + 2), sender: 'bot', text: 'Prody is thinking...', loading: true },
+      { id: String(prev.length + 2), sender: 'bot', text: 'Thinking...', loading: true },
     ]);
     
-    // Call DeepSeek with text-based task extraction
-    const aiReplyRaw = await fetchAIResponseWithTaskExtraction(userMsg, [
-      ...messages,
-      { sender: 'user', text: userMsg }
-    ], user.id, () => {
-      // Trigger refresh by navigating to refresh other screens
-      router.setParams({ refresh: Date.now().toString() });
-    });
+    const aiReplyRaw = await fetchAIResponseWithTaskExtraction(
+      userMsg,
+      [...messages, { sender: 'user', text: userMsg }],
+      user.id,
+      () => {
+        router.setParams({ refresh: Date.now().toString() });
+      },
+      {
+        onStreamDelta: (partial) => {
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.loading ? { ...m, text: partial.trim() ? partial : 'Thinking...' } : m,
+            ),
+          );
+        },
+      },
+    );
     const aiReply = typeof aiReplyRaw === 'string' ? { text: aiReplyRaw, suggestions: [] } : aiReplyRaw;
     setMessages(prev => prev.map(m =>
       m.loading ? { ...m, text: aiReply.text, loading: false, suggestions: aiReply.suggestions } : m
     ));
+  };
+
+  const cancelVoiceSession = useCallback(() => {
+    voiceOverlayCancelledRef.current = true;
+    setVoiceSession(null);
+    Speech.stop();
+
+    const rec = recordingRef.current;
+    if (rec) {
+      try {
+        rec.setOnRecordingStatusUpdate(null);
+      } catch {
+        /* ignore */
+      }
+    }
+    recordingRef.current = null;
+    autoSilenceFinishRef.current = false;
+    heardSpeechRef.current = false;
+    lastSoundTimeRef.current = null;
+
+    InteractionManager.runAfterInteractions(() => {
+      void (async () => {
+        if (rec) {
+          try {
+            await rec.stopAndUnloadAsync();
+          } catch {
+            /* ignore */
+          }
+        }
+        await Audio.setAudioModeAsync({ allowsRecordingIOS: false }).catch(() => {});
+      })();
+    });
+  }, []);
+
+  const finishVoiceRecording = async () => {
+    if (voiceOverlayCancelledRef.current) {
+      return;
+    }
+    const rec = recordingRef.current;
+    if (rec) {
+      try {
+        rec.setOnRecordingStatusUpdate(null);
+      } catch {
+        /* ignore */
+      }
+    }
+    recordingRef.current = null;
+    autoSilenceFinishRef.current = false;
+    heardSpeechRef.current = false;
+    lastSoundTimeRef.current = null;
+    if (!rec) {
+      setVoiceSession(null);
+      return;
+    }
+    setVoiceSession('thinking');
+    try {
+      await rec.stopAndUnloadAsync();
+      if (voiceOverlayCancelledRef.current) {
+        await Audio.setAudioModeAsync({ allowsRecordingIOS: false }).catch(() => {});
+        return;
+      }
+      const uri = rec.getURI();
+      await Audio.setAudioModeAsync({ allowsRecordingIOS: false });
+      if (!uri) throw new Error('No audio file');
+      const userMsg = await transcribeAudioUri(uri);
+      if (voiceOverlayCancelledRef.current) {
+        return;
+      }
+      if (!userMsg.trim()) {
+        setVoiceSession(null);
+        Alert.alert('Voice', 'No speech detected. Try again.');
+        return;
+      }
+      if (!user) {
+        setVoiceSession(null);
+        return;
+      }
+      const cachedResponse = getCachedResponse(userMsg);
+      if (cachedResponse) {
+        if (voiceOverlayCancelledRef.current) {
+          return;
+        }
+        setMessages(prev => [
+          ...prev,
+          { id: `u-${Date.now()}`, sender: 'user', text: userMsg },
+          {
+            id: `b-${Date.now()}`,
+            sender: 'bot',
+            text: cachedResponse.text,
+            loading: false,
+            suggestions: cachedResponse.suggestions,
+          },
+        ]);
+        setVoiceSession('speaking');
+        speakBot(stripMarkdown(cachedResponse.text), {
+          onDone: () => {
+            if (!voiceOverlayCancelledRef.current) setVoiceSession(null);
+          },
+          onStopped: () => {
+            if (!voiceOverlayCancelledRef.current) setVoiceSession(null);
+          },
+          onError: () => {
+            if (!voiceOverlayCancelledRef.current) setVoiceSession(null);
+          },
+        });
+        return;
+      }
+      setMessages(prev => [
+        ...prev,
+        { id: `u-${Date.now()}`, sender: 'user', text: userMsg },
+        { id: `b-${Date.now()}`, sender: 'bot', text: 'Thinking...', loading: true },
+      ]);
+      const aiReplyRaw = await fetchAIResponseWithTaskExtraction(
+        userMsg,
+        [...messages, { sender: 'user', text: userMsg }],
+        user.id,
+        () => {
+          router.setParams({ refresh: Date.now().toString() });
+        },
+        {
+          onStreamDelta: (partial) => {
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.loading ? { ...m, text: partial.trim() ? partial : 'Thinking...' } : m,
+              ),
+            );
+          },
+        },
+      );
+      if (voiceOverlayCancelledRef.current) {
+        setMessages(prev => prev.filter(m => !m.loading));
+        return;
+      }
+      const aiReply =
+        typeof aiReplyRaw === 'string'
+          ? { text: aiReplyRaw, suggestions: [] }
+          : aiReplyRaw;
+      setMessages(prev =>
+        prev.map(m =>
+          m.loading
+            ? { ...m, text: aiReply.text, loading: false, suggestions: aiReply.suggestions }
+            : m,
+        ),
+      );
+      setVoiceSession('speaking');
+      speakBot(stripMarkdown(aiReply.text), {
+        onDone: () => {
+          if (!voiceOverlayCancelledRef.current) setVoiceSession(null);
+        },
+        onStopped: () => {
+          if (!voiceOverlayCancelledRef.current) setVoiceSession(null);
+        },
+        onError: () => {
+          if (!voiceOverlayCancelledRef.current) setVoiceSession(null);
+        },
+      });
+    } catch (e) {
+      console.error(e);
+      if (!voiceOverlayCancelledRef.current) {
+        setVoiceSession(null);
+        Alert.alert('Voice', e instanceof Error ? e.message : 'Voice input failed');
+      }
+    }
+  };
+
+  finishVoiceRecordingRef.current = finishVoiceRecording;
+
+  const handleMicPress = async () => {
+    if (voiceSession === 'listening') {
+      await finishVoiceRecording();
+      return;
+    }
+    if (!getOpenAIKey()) {
+      Alert.alert(
+        'OpenAI API key',
+        'Add EXPO_PUBLIC_OPENAI_API_KEY to your .env file and restart Expo.',
+      );
+      return;
+    }
+    try {
+      const { status } = await Audio.requestPermissionsAsync();
+      if (status !== 'granted') {
+        Alert.alert('Microphone', 'Microphone access is required for voice input.');
+        return;
+      }
+      await Audio.setAudioModeAsync({
+        allowsRecordingIOS: true,
+        playsInSilentModeIOS: true,
+      });
+      voiceOverlayCancelledRef.current = false;
+      autoSilenceFinishRef.current = false;
+      heardSpeechRef.current = false;
+      lastSoundTimeRef.current = null;
+
+      const rec = new Audio.Recording();
+      await rec.prepareToRecordAsync(Audio.RecordingOptionsPresets.HIGH_QUALITY);
+      rec.setProgressUpdateInterval(200);
+      rec.setOnRecordingStatusUpdate(status => {
+        if (!status.isRecording || autoSilenceFinishRef.current) return;
+        const m = status.metering;
+        if (typeof m !== 'number') return;
+        const now = Date.now();
+        if (m > VOICE_METERING_DB) {
+          heardSpeechRef.current = true;
+          lastSoundTimeRef.current = now;
+          return;
+        }
+        if (heardSpeechRef.current && lastSoundTimeRef.current != null) {
+          if (now - lastSoundTimeRef.current >= VOICE_SILENCE_MS) {
+            autoSilenceFinishRef.current = true;
+            try {
+              rec.setOnRecordingStatusUpdate(null);
+            } catch {
+              /* ignore */
+            }
+            void finishVoiceRecordingRef.current();
+          }
+        }
+      });
+      await rec.startAsync();
+      recordingRef.current = rec;
+      setVoiceSession('listening');
+    } catch (e) {
+      console.error(e);
+      Alert.alert('Voice', 'Could not start recording.');
+    }
   };
 
   // Handle quick reply button click
@@ -1463,15 +1285,26 @@ export default function ChatScreen() {
     setMessages(prev => [
       ...prev,
       { id: String(prev.length + 1), sender: 'user', text: suggestion },
-      { id: String(prev.length + 2), sender: 'bot', text: 'Prody is thinking...', loading: true },
+      { id: String(prev.length + 2), sender: 'bot', text: 'Thinking...', loading: true },
     ]);
     setInput('');
-    const aiReplyRaw = await fetchAIResponseWithTaskExtraction(suggestion, [
-      ...messages,
-      { sender: 'user', text: suggestion }
-    ], user.id, () => {
-      router.setParams({ refresh: Date.now().toString() });
-    });
+    const aiReplyRaw = await fetchAIResponseWithTaskExtraction(
+      suggestion,
+      [...messages, { sender: 'user', text: suggestion }],
+      user.id,
+      () => {
+        router.setParams({ refresh: Date.now().toString() });
+      },
+      {
+        onStreamDelta: (partial) => {
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.loading ? { ...m, text: partial.trim() ? partial : 'Thinking...' } : m,
+            ),
+          );
+        },
+      },
+    );
     const aiReply = typeof aiReplyRaw === 'string' ? { text: aiReplyRaw, suggestions: [] } : aiReplyRaw;
     setMessages(prev => prev.map(m =>
       m.loading ? { ...m, text: aiReply.text, loading: false, suggestions: aiReply.suggestions } : m
@@ -1485,13 +1318,19 @@ export default function ChatScreen() {
     return (
       <View style={[styles.messageRow, isBot ? styles.botRow : styles.userRow]}>
         {isBot && (
-          <Avatar.Image source={botImage} size={40} style={styles.avatar} />
+          <View style={styles.oracleAvatar}>
+            <MaterialCommunityIcons name="star-four-points" size={22} color={c.amber} />
+          </View>
         )}
         <View style={[styles.bubble, isBot ? styles.botBubble : styles.userBubble]}>
           {item.loading ? (
-            <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-              <Text style={[styles.messageText, styles.botText, { marginRight: 8 }]}>Prody is thinking</Text>
-              <TypingIndicator />
+            <View style={{ flexDirection: 'row', alignItems: 'flex-start' }}>
+              <Text style={[styles.messageText, styles.botText, { flex: 1, marginRight: 8 }]}>
+                {item.text && item.text !== 'Thinking...'
+                  ? stripMarkdown(item.text)
+                  : 'Thinking…'}
+              </Text>
+              {(!item.text || item.text === 'Thinking...') && <TypingIndicator />}
             </View>
           ) : (
             <Text style={[styles.messageText, isBot ? styles.botText : styles.userText]}>{displayText}</Text>
@@ -1501,13 +1340,14 @@ export default function ChatScreen() {
           <IconButton
             icon={speakingId === item.id ? 'pause' : 'play'}
             size={24}
+            iconColor={c.amber}
             onPress={() => handlePlayPause(item.id, displayText)}
             style={{ marginLeft: 0 }}
             accessibilityLabel={speakingId === item.id ? 'Pause reading aloud' : 'Play message aloud'}
           />
         )}
         {!isBot && (
-          <Avatar.Icon icon="account" size={40} style={styles.avatar} />
+          <Avatar.Icon icon="account" size={40} style={[styles.avatar, { backgroundColor: c.surf }]} color={c.tx} />
         )}
         {/* Quick reply buttons for suggestions */}
         {isBot && item.suggestions && item.suggestions.length > 0 && !item.loading && (
@@ -1516,7 +1356,9 @@ export default function ChatScreen() {
               <Button
                 key={idx}
                 mode="outlined"
-                style={{ marginRight: 6, marginBottom: 4, borderRadius: 16 }}
+                style={{ marginRight: 6, marginBottom: 4, borderRadius: 12, borderColor: c.amberBorder }}
+                textColor={c.amber}
+                labelStyle={{ fontFamily: FONT_SERIF, fontSize: 13 }}
                 onPress={() => handleQuickReply(suggestion)}
               >
                 {suggestion}
@@ -1528,160 +1370,288 @@ export default function ChatScreen() {
     );
   };
 
+  const inputBottomPad = Math.max(insets.bottom, 12);
+  const listBottomPad = INPUT_BAR_HEIGHT + inputBottomPad + 20;
+
   return (
-    <View style={{ flex: 1 }}>
+    <View style={[styles.root, { backgroundColor: c.bg }]}>
       <KeyboardAvoidingView
         style={{ flex: 1 }}
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-        keyboardVerticalOffset={BOTTOM_NAV_TOTAL_HEIGHT}
+        keyboardVerticalOffset={Platform.OS === 'ios' ? insets.top : 0}
       >
-        <View style={[styles.container, { flex: 1 }]}> 
-          {/* Header */}
-          <View style={styles.header}>
-            <Avatar.Image source={botImage} size={48} style={styles.headerAvatar} />
-            <Text style={styles.headerTitle}>{BOT_NAME}</Text>
-            <IconButton icon="arrow-left" onPress={() => router.back()} style={styles.headerBack} />
+        <View style={[styles.container, { flex: 1 }]}>
+          <View style={[styles.header, { paddingTop: insets.top + 8 }]}>
+            <IconButton
+              icon="arrow-left"
+              onPress={() => router.back()}
+              iconColor={c.tx}
+              style={styles.headerIconBtn}
+            />
+            <Text style={styles.headerTitleCenter}>{BOT_NAME}</Text>
+            <View style={styles.headerRightSpacer} />
           </View>
-          {/* Chat messages */}
           <FlatList
             ref={flatListRef}
             data={messages}
             renderItem={renderItem}
             keyExtractor={item => item.id}
-            contentContainerStyle={styles.messagesContainer}
+            contentContainerStyle={[
+              styles.messagesContainer,
+              { paddingBottom: listBottomPad },
+            ]}
             showsVerticalScrollIndicator={false}
           />
-          {/* Input */}
-          <View style={styles.inputRow}>
-            <TextInput
-              value={input}
-              onChangeText={setInput}
-              placeholder="Type your message..."
-              style={styles.input}
-              mode="outlined"
-            />
-            <IconButton
-              icon="send"
-              onPress={handleSend}
-              style={styles.sendButton}
-              disabled={!input.trim()}
-            />
+          <View style={[styles.inputRow, { paddingBottom: inputBottomPad }]}>
+            <View style={styles.capsule}>
+              <RNTextInput
+                value={input}
+                onChangeText={setInput}
+                placeholder="Ask anything"
+                placeholderTextColor={c.tx3}
+                style={styles.capsuleInput}
+                editable={voiceSession === null}
+                multiline={false}
+                onSubmitEditing={handleSend}
+                returnKeyType="send"
+              />
+              {input.trim().length > 0 ? (
+                <TouchableOpacity onPress={handleSend} style={styles.capsuleInnerSend}>
+                  <MaterialCommunityIcons name="send" size={22} color={c.amber} />
+                </TouchableOpacity>
+              ) : null}
+            </View>
+            <TouchableOpacity
+              style={[
+                styles.micOuter,
+                voiceSession === 'listening' && styles.micOuterActive,
+              ]}
+              onPress={handleMicPress}
+              accessibilityLabel={
+                voiceSession === 'listening'
+                  ? 'Stop recording and send, or wait for silence'
+                  : 'Voice input'
+              }
+            >
+              <MaterialCommunityIcons
+                name={voiceSession === 'listening' ? 'stop' : 'microphone'}
+                size={22}
+                color={c.tx}
+              />
+            </TouchableOpacity>
           </View>
         </View>
       </KeyboardAvoidingView>
-      {!keyboardVisible && (
-        <View style={styles.bottomNavBarWrapper} pointerEvents="box-none">
-          <BottomNavBar />
+
+      <Modal
+        visible={voiceSession !== null}
+        transparent
+        animationType="fade"
+        onRequestClose={cancelVoiceSession}
+      >
+        <View style={styles.voiceOverlay}>
+          <TouchableOpacity
+            style={[styles.voiceCloseBtn, { top: insets.top + 12 }]}
+            onPress={cancelVoiceSession}
+          >
+            <Text style={styles.voiceCloseText}>Close</Text>
+          </TouchableOpacity>
+          <VoiceOrb
+            mode={
+              voiceSession === 'listening'
+                ? 'listening'
+                : voiceSession === 'speaking'
+                  ? 'speaking'
+                  : 'thinking'
+            }
+            active={voiceSession !== null}
+          />
+          {voiceSession === 'listening' ? <ListeningDots active /> : null}
+          <Text style={styles.voiceHint}>
+            {voiceSession === 'listening'
+              ? 'Listening… stops and sends after 3s of silence, or tap mic'
+              : voiceSession === 'thinking'
+                ? 'Thinking…'
+                : 'Speaking…'}
+          </Text>
         </View>
-      )}
+      </Modal>
       <OfflineIndicator />
     </View>
   );
 }
 
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#F7F8FA',
-  },
-  header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingTop: 48,
-    paddingBottom: 16,
-    paddingHorizontal: 20,
-    backgroundColor: '#fff',
-    borderBottomWidth: 1,
-    borderBottomColor: '#EEE',
-    zIndex: 10,
-  },
-  headerAvatar: {
-    marginRight: 12,
-    backgroundColor: '#fff',
-  },
-  headerTitle: {
-    fontSize: 22,
-    fontWeight: 'bold',
-    color: '#7B61FF',
-    flex: 1,
-  },
-  headerBack: {
-    position: 'absolute',
-    left: 0,
-    top: 44,
-    backgroundColor: 'transparent',
-  },
-  messagesContainer: {
-    padding: 16,
-    paddingBottom: BOTTOM_NAV_TOTAL_HEIGHT + INPUT_BAR_HEIGHT + 24, // Default space when keyboard hidden
-  },
-  messageRow: {
-    flexDirection: 'row',
-    alignItems: 'flex-end',
-    marginBottom: 12,
-  },
-  botRow: {
-    justifyContent: 'flex-start',
-  },
-  userRow: {
-    justifyContent: 'flex-end',
-  },
-  avatar: {
-    backgroundColor: '#fff',
-    marginRight: 8,
-    marginLeft: 8,
-  },
-  bubble: {
-    maxWidth: '75%',
-    borderRadius: 18,
-    paddingVertical: 10,
-    paddingHorizontal: 16,
-  },
-  botBubble: {
-    backgroundColor: '#fff',
-    borderTopLeftRadius: 0,
-    borderColor: '#EEE',
-    borderWidth: 1,
-  },
-  userBubble: {
-    backgroundColor: '#7B61FF',
-    borderTopRightRadius: 0,
-  },
-  messageText: {
-    fontSize: 16,
-  },
-  botText: {
-    color: '#222',
-  },
-  userText: {
-    color: '#fff',
-  },
-  inputRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    padding: 12,
-    backgroundColor: '#fff',
-    borderTopWidth: 1,
-    borderTopColor: '#EEE',
-    position: 'absolute',
-    left: 0,
-    right: 0,
-    bottom: BOTTOM_NAV_TOTAL_HEIGHT,
-    zIndex: 1100,
-  },
-  input: {
-    flex: 1,
-    marginRight: 8,
-    backgroundColor: '#F7F8FA',
-  },
-  sendButton: {
-    backgroundColor: '#7B61FF',
-  },
-  bottomNavBarWrapper: {
-    position: 'absolute',
-    left: 0,
-    right: 0,
-    bottom: 0,
-    zIndex: 1000, // Ensure it's above all content
-  },
-}); 
+function createChatStyles(c: ThemeColors) {
+  return StyleSheet.create({
+    root: {
+      flex: 1,
+    },
+    container: {
+      flex: 1,
+      backgroundColor: c.bg,
+    },
+    header: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      paddingBottom: 12,
+      paddingHorizontal: 4,
+      backgroundColor: c.bg,
+      borderBottomWidth: StyleSheet.hairlineWidth,
+      borderBottomColor: c.borderDefault,
+      zIndex: 10,
+    },
+    headerIconBtn: {
+      margin: 0,
+    },
+    headerTitleCenter: {
+      fontFamily: FONT_SERIF,
+      fontSize: 18,
+      fontWeight: '600',
+      color: c.tx,
+      flex: 1,
+      textAlign: 'center',
+    },
+    headerRightSpacer: {
+      width: 48,
+    },
+    messagesContainer: {
+      flexGrow: 1,
+      paddingHorizontal: 16,
+      paddingTop: 12,
+    },
+    oracleAvatar: {
+      width: 40,
+      height: 40,
+      borderRadius: 20,
+      borderWidth: 2,
+      borderColor: c.amberBorder,
+      backgroundColor: c.bg2,
+      alignItems: 'center',
+      justifyContent: 'center',
+      marginRight: 8,
+    },
+    messageRow: {
+      flexDirection: 'row',
+      alignItems: 'flex-end',
+      marginBottom: 12,
+    },
+    botRow: {
+      justifyContent: 'flex-start',
+    },
+    userRow: {
+      justifyContent: 'flex-end',
+    },
+    avatar: {
+      marginRight: 8,
+      marginLeft: 8,
+    },
+    bubble: {
+      maxWidth: '78%',
+      borderRadius: 14,
+      paddingVertical: 10,
+      paddingHorizontal: 14,
+    },
+    botBubble: {
+      backgroundColor: c.surf,
+      borderTopLeftRadius: 4,
+      borderWidth: 1,
+      borderColor: c.borderDefault,
+    },
+    userBubble: {
+      backgroundColor: c.blueBg,
+      borderWidth: 1,
+      borderColor: c.blueBorder,
+      borderTopRightRadius: 4,
+    },
+    messageText: {
+      fontFamily: FONT_SERIF,
+      fontSize: 15,
+      lineHeight: 22,
+    },
+    botText: {
+      color: c.tx,
+    },
+    userText: {
+      color: c.tx,
+    },
+    inputRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      paddingHorizontal: 14,
+      paddingTop: 10,
+      backgroundColor: c.bg,
+      borderTopWidth: StyleSheet.hairlineWidth,
+      borderTopColor: c.borderDefault,
+      position: 'absolute',
+      left: 0,
+      right: 0,
+      bottom: 0,
+      zIndex: 1100,
+    },
+    capsule: {
+      flex: 1,
+      flexDirection: 'row',
+      alignItems: 'center',
+      backgroundColor: c.bg2,
+      borderRadius: 999,
+      borderWidth: 1,
+      borderColor: c.borderDefault,
+      paddingLeft: 16,
+      paddingRight: 6,
+      minHeight: 48,
+      maxHeight: 48,
+    },
+    capsuleInput: {
+      flex: 1,
+      fontFamily: FONT_SERIF,
+      color: c.tx,
+      fontSize: 16,
+      paddingVertical: 10,
+    },
+    capsuleInnerSend: {
+      padding: 8,
+    },
+    micOuter: {
+      width: 48,
+      height: 48,
+      borderRadius: 24,
+      backgroundColor: c.bg2,
+      borderWidth: 1,
+      borderColor: c.borderDefault,
+      alignItems: 'center',
+      justifyContent: 'center',
+      marginLeft: 10,
+    },
+    micOuterActive: {
+      backgroundColor: 'rgba(220,38,38,0.25)',
+      borderColor: 'rgba(220,38,38,0.5)',
+    },
+    voiceOverlay: {
+      flex: 1,
+      backgroundColor: 'rgba(15,15,20,0.96)',
+      justifyContent: 'center',
+      alignItems: 'center',
+      padding: 24,
+    },
+    voiceCloseBtn: {
+      position: 'absolute',
+      right: 16,
+      padding: 12,
+      zIndex: 10,
+    },
+    voiceCloseText: {
+      fontFamily: FONT_SERIF,
+      color: c.tx2,
+      fontSize: 16,
+    },
+    voiceHint: {
+      fontFamily: FONT_SERIF,
+      marginTop: 28,
+      color: c.tx2,
+      fontSize: 15,
+      textAlign: 'center',
+      paddingHorizontal: 24,
+    },
+  });
+} 

@@ -62,9 +62,10 @@ class OfflineTaskService {
     if (offlineService.isCurrentlyOnline()) {
       try {
         const supabaseTasks = await supabaseTaskService.getTasks(userId);
-        
+        const pendingDeletes = await offlineService.getPendingDeleteTaskIds(userId);
+
         // Merge tasks, preferring offline versions for conflicts
-        const mergedTasks = this.mergeTasks(offlineTasks, supabaseTasks);
+        const mergedTasks = this.mergeTasks(offlineTasks, supabaseTasks, pendingDeletes);
         
         // Update offline storage with merged data
         for (const task of mergedTasks) {
@@ -95,27 +96,37 @@ class OfflineTaskService {
     return await this.updateTask(taskId, { priority });
   }
 
+  /** Clear folder_id for all tasks belonging to a deleted folder (local/offline tasks). */
+  async clearFolderFromTasks(userId: string, folderId: string): Promise<void> {
+    const tasks = await this.getTasks(userId);
+    for (const t of tasks) {
+      if (t.folder_id === folderId) {
+        await this.updateTask(t.id, { folder_id: null });
+      }
+    }
+  }
+
   async updateTaskDeadline(taskId: string, deadline: string): Promise<Task> {
     return await this.updateTask(taskId, { deadline });
   }
 
   // Helper method to merge tasks from different sources
-  private mergeTasks(offlineTasks: Task[], supabaseTasks: Task[]): Task[] {
+  private mergeTasks(offlineTasks: Task[], supabaseTasks: Task[], pendingDeleteIds: Set<string>): Task[] {
     const mergedMap = new Map<string, Task>();
-    
-    // Add all Supabase tasks first
-    for (const task of supabaseTasks) {
+
+    const supabaseFiltered = supabaseTasks.filter((t) => !pendingDeleteIds.has(String(t.id)));
+
+    for (const task of supabaseFiltered) {
       mergedMap.set(task.id, task);
     }
-    
-    // Override with offline tasks (they're more recent)
+
     for (const task of offlineTasks) {
       const existing = mergedMap.get(task.id);
       if (!existing || new Date(task.updated_at) > new Date(existing.updated_at)) {
         mergedMap.set(task.id, task);
       }
     }
-    
+
     return Array.from(mergedMap.values());
   }
 

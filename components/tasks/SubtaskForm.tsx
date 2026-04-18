@@ -1,28 +1,10 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useMemo } from 'react';
 import { View, StyleSheet, ScrollView } from 'react-native';
-import { TextInput, Button, Text, Chip, useTheme, IconButton } from 'react-native-paper';
-import { Task, TaskCreate, TaskPriority } from '../../types/task';
+import { TextInput, Button, Text } from 'react-native-paper';
+import { TaskCreate } from '../../types/task';
 import DateTimePicker from '@react-native-community/datetimepicker';
-
-// Activity options for subtasks
-const ACTIVITY_OPTIONS = [
-  { key: 'exercise', label: 'Exercise', emoji: '🏋️' },
-  { key: 'reading', label: 'Reading', emoji: '📖' },
-  { key: 'meditation', label: 'Meditation', emoji: '🧘' },
-  { key: 'working', label: 'Working', emoji: '💻' },
-  { key: 'study', label: 'Study', emoji: '📚' },
-  { key: 'writing', label: 'Writing', emoji: '📝' },
-  { key: 'jogging', label: 'Jogging', emoji: '🏃' },
-  { key: 'cooking', label: 'Cooking', emoji: '👨‍🍳' },
-  { key: 'guitar', label: 'Guitar', emoji: '🎸' },
-  { key: 'painting', label: 'Painting', emoji: '🎨' },
-  { key: 'gaming', label: 'Gaming', emoji: '🎮' },
-  { key: 'shopping', label: 'Shopping', emoji: '🛍️' },
-  { key: 'party', label: 'Party', emoji: '🎉' },
-  { key: 'trading', label: 'Trading', emoji: '📊' },
-  { key: 'loving', label: 'Loving', emoji: '❤️' },
-  { key: 'drink', label: 'Drink', emoji: '💧' },
-];
+import { FONT_SERIF, type ThemeColors } from '../../constants/lifeTrackerDesign';
+import { useAppTheme } from '../../contexts/AppThemeContext';
 
 interface SubtaskFormProps {
   parentTaskId: string;
@@ -30,68 +12,112 @@ interface SubtaskFormProps {
   onCancel: () => void;
 }
 
-const SubtaskForm: React.FC<SubtaskFormProps> = ({
-  parentTaskId,
-  onSubmit,
-  onCancel,
-}) => {
-  const theme = useTheme();
+function createSubtaskFormStyles(c: ThemeColors) {
+  return StyleSheet.create({
+    container: {
+      padding: 16,
+    },
+    title: {
+      fontSize: 20,
+      fontWeight: 'bold',
+      marginBottom: 20,
+      color: c.tx,
+      fontFamily: FONT_SERIF,
+    },
+    input: {
+      marginBottom: 16,
+      backgroundColor: c.surf,
+    },
+    sectionTitle: {
+      fontSize: 16,
+      fontWeight: 'bold',
+      marginTop: 16,
+      marginBottom: 8,
+      color: c.tx2,
+      fontFamily: FONT_SERIF,
+    },
+    dateButton: {
+      marginBottom: 16,
+    },
+    timeContainer: {
+      flexDirection: 'row',
+      marginBottom: 16,
+    },
+    timeButton: {
+      flex: 1,
+    },
+    timeButtonLeft: {
+      marginRight: 8,
+    },
+    timeButtonRight: {
+      marginLeft: 8,
+    },
+    buttonContainer: {
+      flexDirection: 'row',
+      justifyContent: 'space-between',
+      marginTop: 16,
+    },
+    cancelButton: {
+      flex: 1,
+      marginRight: 8,
+    },
+    submitButton: {
+      flex: 1,
+      marginLeft: 8,
+    },
+  });
+}
+
+const SubtaskForm: React.FC<SubtaskFormProps> = ({ parentTaskId, onSubmit, onCancel }) => {
+  const { colors: c } = useAppTheme();
+  const styles = useMemo(() => createSubtaskFormStyles(c), [c]);
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
-  const [priority, setPriority] = useState<TaskPriority>(1);
+  const [xpInput, setXpInput] = useState('20');
   const [deadline, setDeadline] = useState<Date | null>(null);
   const [startTime, setStartTime] = useState<Date | null>(null);
   const [endTime, setEndTime] = useState<Date | null>(null);
-  const [selectedActivities, setSelectedActivities] = useState<string[]>([]);
-  
-  // Date/Time picker states
   const [showDatePicker, setShowDatePicker] = useState(false);
   const [showStartTimePicker, setShowStartTimePicker] = useState(false);
   const [showEndTimePicker, setShowEndTimePicker] = useState(false);
 
+  const parseXp = () => {
+    const n = parseInt(xpInput.replace(/\D/g, ''), 10);
+    if (Number.isNaN(n)) return 20;
+    return Math.max(1, Math.min(9999, n));
+  };
+
   const handleSubmit = () => {
     if (!title.trim()) return;
-
     const subtaskData: TaskCreate & { parent_task_id: string } = {
       title: title.trim(),
       description: description.trim() || undefined,
-      priority,
+      xp_reward: parseXp(),
+      priority: 0,
       parent_task_id: parentTaskId,
-      activities: selectedActivities.length > 0 ? selectedActivities : undefined,
+      activities: [],
       ...(deadline && { deadline: deadline.toISOString().split('T')[0] }),
       ...(startTime && { startTime: startTime.toISOString() }),
       ...(endTime && { endTime: endTime.toISOString() }),
     };
-
     onSubmit(subtaskData);
   };
 
-  const toggleActivity = (activityKey: string) => {
-    setSelectedActivities(prev => 
-      prev.includes(activityKey)
-        ? prev.filter(key => key !== activityKey)
-        : [...prev, activityKey]
-    );
-  };
-
-  const formatDate = (date: Date) => {
-    return date.toLocaleDateString();
-  };
-
-  const formatTime = (date: Date) => {
-    return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-  };
+  const formatDate = (date: Date) => date.toLocaleDateString();
+  const formatTime = (date: Date) =>
+    date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
   return (
     <ScrollView style={styles.container} showsVerticalScrollIndicator={false}>
       <Text style={styles.title}>Add Subtask</Text>
-      
+
       <TextInput
-        label="Subtask Title *"
+        label="Subtask title *"
         value={title}
         onChangeText={setTitle}
         style={styles.input}
         mode="outlined"
+        textColor={c.tx}
       />
 
       <TextInput
@@ -102,32 +128,30 @@ const SubtaskForm: React.FC<SubtaskFormProps> = ({
         mode="outlined"
         multiline
         numberOfLines={3}
+        textColor={c.tx}
       />
 
-      <Text style={styles.sectionTitle}>Priority</Text>
-      <View style={styles.priorityContainer}>
-        {[0, 1, 2, 3].map((p) => (
-          <Chip
-            key={p}
-            selected={priority === p}
-            onPress={() => setPriority(p as TaskPriority)}
-            style={[styles.priorityChip, priority === p && styles.priorityChipSelected]}
-            textStyle={priority === p ? styles.priorityTextSelected : styles.priorityText}
-          >
-            {['Low', 'Medium', 'High', 'Urgent'][p]}
-          </Chip>
-        ))}
-      </View>
+      <Text style={styles.sectionTitle}>XP reward</Text>
+      <TextInput
+        label="XP"
+        value={xpInput}
+        onChangeText={setXpInput}
+        keyboardType="number-pad"
+        style={styles.input}
+        mode="outlined"
+        textColor={c.tx}
+      />
 
-      <Text style={styles.sectionTitle}>Date & Time</Text>
-      
+      <Text style={styles.sectionTitle}>Date & time</Text>
+
       <Button
         mode="outlined"
         onPress={() => setShowDatePicker(true)}
         style={styles.dateButton}
-        icon="calendar"
+        textColor={c.amber}
+        labelStyle={{ fontFamily: FONT_SERIF }}
       >
-        {deadline ? formatDate(deadline) : 'Set Deadline'}
+        {deadline ? formatDate(deadline) : 'Set deadline'}
       </Button>
 
       <View style={styles.timeContainer}>
@@ -135,59 +159,44 @@ const SubtaskForm: React.FC<SubtaskFormProps> = ({
           mode="outlined"
           onPress={() => setShowStartTimePicker(true)}
           style={[styles.timeButton, styles.timeButtonLeft]}
-          icon="clock-start"
+          textColor={c.tx}
+          labelStyle={{ fontFamily: FONT_SERIF }}
         >
-          {startTime ? formatTime(startTime) : 'Start Time'}
+          {startTime ? formatTime(startTime) : 'Start time'}
         </Button>
-        
+
         <Button
           mode="outlined"
           onPress={() => setShowEndTimePicker(true)}
           style={[styles.timeButton, styles.timeButtonRight]}
-          icon="clock-end"
+          textColor={c.tx}
+          labelStyle={{ fontFamily: FONT_SERIF }}
         >
-          {endTime ? formatTime(endTime) : 'End Time'}
+          {endTime ? formatTime(endTime) : 'End time'}
         </Button>
-      </View>
-
-      <Text style={styles.sectionTitle}>Activities</Text>
-      <View style={styles.activitiesContainer}>
-        {ACTIVITY_OPTIONS.map((activity) => (
-          <Chip
-            key={activity.key}
-            selected={selectedActivities.includes(activity.key)}
-            onPress={() => toggleActivity(activity.key)}
-            style={[
-              styles.activityChip,
-              selectedActivities.includes(activity.key) && styles.activityChipSelected
-            ]}
-            textStyle={selectedActivities.includes(activity.key) ? styles.activityTextSelected : styles.activityText}
-          >
-            {activity.emoji} {activity.label}
-          </Chip>
-        ))}
       </View>
 
       <View style={styles.buttonContainer}>
-        <Button mode="outlined" onPress={onCancel} style={styles.cancelButton}>
+        <Button mode="outlined" textColor={c.tx2} onPress={onCancel} style={styles.cancelButton}>
           Cancel
         </Button>
-        <Button 
-          mode="contained" 
+        <Button
+          mode="contained"
           onPress={handleSubmit}
           disabled={!title.trim()}
           style={styles.submitButton}
+          buttonColor={c.amber}
+          textColor={c.onAccent}
         >
           Add Subtask
         </Button>
       </View>
 
-      {/* Date/Time Pickers */}
       {showDatePicker && (
         <DateTimePicker
           value={deadline || new Date()}
           mode="date"
-          onChange={(event, selectedDate) => {
+          onChange={(_e, selectedDate) => {
             setShowDatePicker(false);
             if (selectedDate) setDeadline(selectedDate);
           }}
@@ -198,7 +207,7 @@ const SubtaskForm: React.FC<SubtaskFormProps> = ({
         <DateTimePicker
           value={startTime || new Date()}
           mode="time"
-          onChange={(event, selectedDate) => {
+          onChange={(_e, selectedDate) => {
             setShowStartTimePicker(false);
             if (selectedDate) setStartTime(selectedDate);
           }}
@@ -209,7 +218,7 @@ const SubtaskForm: React.FC<SubtaskFormProps> = ({
         <DateTimePicker
           value={endTime || new Date()}
           mode="time"
-          onChange={(event, selectedDate) => {
+          onChange={(_e, selectedDate) => {
             setShowEndTimePicker(false);
             if (selectedDate) setEndTime(selectedDate);
           }}
@@ -219,97 +228,4 @@ const SubtaskForm: React.FC<SubtaskFormProps> = ({
   );
 };
 
-const styles = StyleSheet.create({
-  container: {
-    padding: 16,
-  },
-  title: {
-    fontSize: 20,
-    fontWeight: 'bold',
-    marginBottom: 20,
-    color: '#222',
-  },
-  input: {
-    marginBottom: 16,
-  },
-  sectionTitle: {
-    fontSize: 16,
-    fontWeight: 'bold',
-    marginTop: 16,
-    marginBottom: 8,
-    color: '#222',
-  },
-  priorityContainer: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
-    marginBottom: 16,
-  },
-  priorityChip: {
-    marginRight: 8,
-    marginBottom: 8,
-  },
-  priorityChipSelected: {
-    backgroundColor: '#7B61FF',
-  },
-  priorityText: {
-    color: '#666',
-  },
-  priorityTextSelected: {
-    color: '#fff',
-    fontWeight: 'bold',
-  },
-  dateButton: {
-    marginBottom: 16,
-  },
-  timeContainer: {
-    flexDirection: 'row',
-    marginBottom: 16,
-  },
-  timeButton: {
-    flex: 1,
-  },
-  timeButtonLeft: {
-    marginRight: 8,
-  },
-  timeButtonRight: {
-    marginLeft: 8,
-  },
-  activitiesContainer: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
-    marginBottom: 24,
-  },
-  activityChip: {
-    marginRight: 8,
-    marginBottom: 8,
-  },
-  activityChipSelected: {
-    backgroundColor: '#EDE7FE',
-    borderColor: '#7B61FF',
-  },
-  activityText: {
-    color: '#666',
-  },
-  activityTextSelected: {
-    color: '#7B61FF',
-    fontWeight: 'bold',
-  },
-  buttonContainer: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    marginTop: 16,
-  },
-  cancelButton: {
-    flex: 1,
-    marginRight: 8,
-  },
-  submitButton: {
-    flex: 1,
-    marginLeft: 8,
-    backgroundColor: '#7B61FF',
-  },
-});
-
-export default SubtaskForm; 
+export default SubtaskForm;
