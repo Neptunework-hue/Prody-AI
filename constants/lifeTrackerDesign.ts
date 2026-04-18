@@ -9,14 +9,33 @@ export const LT = {
   bg: '#0f0f14',
   parchment: '#e8e0cc',
   parchmentMuted: '#c4bba8',
+  parchmentFaint: '#5a5468',
   amber: '#EF9F27',
   teal: '#1D9E75',
   blue: '#378ADD',
   pink: '#D4537E',
+  purple: '#7F77DD',
   surface: '#1a1a22',
   surfaceElevated: '#22222c',
+  surfaceDeep: '#16141e',
   outline: '#4a4a55',
+  outlineFaint: '#2a2838',
 } as const;
+
+export interface TierInfo {
+  color: string;
+  icon: string;
+}
+
+export const TIER_CONFIG: Record<string, TierInfo> = {
+  'T1: Money':        { color: '#EF9F27', icon: '💰' },
+  'T2: Education':    { color: '#378ADD', icon: '🎓' },
+  'T3: Professional': { color: '#1D9E75', icon: '💼' },
+  'T4: Habits':       { color: '#D4537E', icon: '🌱' },
+  'Pipeline':         { color: '#7F77DD', icon: '📋' },
+};
+
+export const TROPHY_ICONS = ['🏆','🥇','🎓','🚀','💎','⭐','🎯','🔥','🏅','👑'];
 
 export const FONT_SERIF = Platform.select({
   ios: 'Georgia',
@@ -69,7 +88,7 @@ export const lifeTrackerPaperTheme = {
     onSurface: LT.parchment,
     onSurfaceVariant: LT.parchmentMuted,
     outline: LT.outline,
-    outlineVariant: '#353540',
+    outlineVariant: LT.outlineFaint,
     error: '#cf6679',
     onError: LT.bg,
     elevation: MD3DarkTheme.colors.elevation,

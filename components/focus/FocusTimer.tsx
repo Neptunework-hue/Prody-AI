@@ -1,120 +1,144 @@
+/**
+ * FocusTimer — RPG-styled SVG ring timer.
+ *
+ * Renders:
+ *  - Session preset selector (25 / 45 / 60 / 90 / custom)
+ *  - SVG countdown ring while session is active
+ *  - Pause / Resume / End session controls
+ *
+ * All Supabase session logic preserved.
+ */
+
 import React, { useState, useEffect } from 'react';
-import { View, StyleSheet } from 'react-native';
-import { Text, Button, ProgressBar, useTheme, Portal, Dialog, TextInput, SegmentedButtons } from 'react-native-paper';
+import { View, StyleSheet, TouchableOpacity } from 'react-native';
+import { Text, TextInput } from 'react-native-paper';
+import Svg, { Circle } from 'react-native-svg';
 import { focusService } from '../../services/supabase/focus';
 import { useAuth } from '../../hooks/useAuth';
 import { FocusSession } from '../../types/focus';
-import BreakTimer from './BreakTimer';
+import { LT } from '../../constants/lifeTrackerDesign';
+import { addXP } from '../../utils/xpSystem';
+
+// ─── constants ───────────────────────────────────────────────────────────────
+
+const PRESETS = [25, 45, 60, 90];
+
+// ─── SVG ring helper ─────────────────────────────────────────────────────────
+
+function Ring({
+  size = 120,
+  r = 50,
+  strokeWidth = 8,
+  progress,          // 0–1
+  color,
+  children,
+}: {
+  size: number;
+  r: number;
+  strokeWidth: number;
+  progress: number;
+  color: string;
+  children?: React.ReactNode;
+}) {
+  const cx = size / 2;
+  const circumference = 2 * Math.PI * r;
+  const offset = circumference * (1 - Math.max(0, Math.min(1, progress)));
+  return (
+    <View style={{ width: size, height: size }}>
+      <Svg
+        width={size}
+        height={size}
+        viewBox={`0 0 ${size} ${size}`}
+        style={{ transform: [{ rotate: '-90deg' }] }}
+      >
+        {/* track */}
+        <Circle cx={cx} cy={cx} r={r} fill="none" stroke={LT.outlineFaint} strokeWidth={strokeWidth} />
+        {/* fill */}
+        <Circle
+          cx={cx}
+          cy={cx}
+          r={r}
+          fill="none"
+          stroke={color}
+          strokeWidth={strokeWidth}
+          strokeDasharray={circumference}
+          strokeDashoffset={offset}
+          strokeLinecap="round"
+        />
+      </Svg>
+      <View style={[StyleSheet.absoluteFill, { alignItems: 'center', justifyContent: 'center' }]}>
+        {children}
+      </View>
+    </View>
+  );
+}
+
+// ─── component ───────────────────────────────────────────────────────────────
 
 interface FocusTimerProps {
   taskId?: string;
   taskTitle?: string;
   onSessionComplete?: () => void;
-  onBreakComplete?: () => void;
-  isBreak?: boolean;
 }
 
-const DEFAULT_DURATIONS = {
-  '25m': 25 * 60,
-  '45m': 45 * 60,
-  '60m': 60 * 60,
-  'custom': 0
-};
-
-const DEFAULT_BREAK_DURATIONS = {
-  '5m': 5 * 60,
-  '10m': 10 * 60,
-  '15m': 15 * 60,
-  'custom': 0
-};
-
-const FocusTimer: React.FC<FocusTimerProps> = ({ 
-  taskId, 
-  taskTitle, 
-  onSessionComplete,
-  onBreakComplete,
-  isBreak = false 
-}) => {
-  const theme = useTheme();
+const FocusTimer: React.FC<FocusTimerProps> = ({ taskId, taskTitle, onSessionComplete }) => {
   const { user } = useAuth();
-  const [timeLeft, setTimeLeft] = useState(DEFAULT_DURATIONS['25m']);
+
+  const [sessionMin, setSessionMin] = useState(25);
+  const [customMin, setCustomMin] = useState('');
+  const [showCustom, setShowCustom] = useState(false);
+
   const [isActive, setIsActive] = useState(false);
+  const [isPaused, setIsPaused] = useState(false);
+  const [timeLeft, setTimeLeft] = useState(25 * 60);
+  const [totalSeconds, setTotalSeconds] = useState(25 * 60);
   const [currentSession, setCurrentSession] = useState<FocusSession | null>(null);
-  const [selectedDuration, setSelectedDuration] = useState('25m');
-  const [customMinutes, setCustomMinutes] = useState('');
-  const [showCustomInput, setShowCustomInput] = useState(false);
-  const [selectedBreakDuration, setSelectedBreakDuration] = useState('5m');
-  const [customBreakMinutes, setCustomBreakMinutes] = useState('');
-  const [showCustomBreakInput, setShowCustomBreakInput] = useState(false);
-  const [breakTimeLeft, setBreakTimeLeft] = useState(DEFAULT_BREAK_DURATIONS['5m']);
-  const [isBreakActive, setIsBreakActive] = useState(false);
 
+  // ── countdown tick ────────────────────────────────────────────────────────
   useEffect(() => {
-    loadActiveSession();
-  }, []);
+    if (!isActive || isPaused || timeLeft <= 0) return;
+    const id = setInterval(() => {
+      setTimeLeft(t => {
+        if (t <= 1) { clearInterval(id); handleComplete(); return 0; }
+        return t - 1;
+      });
+    }, 1000);
+    return () => clearInterval(id);
+  }, [isActive, isPaused]);
 
-  const loadActiveSession = async () => {
+  // ── resume active session on mount ───────────────────────────────────────
+  useEffect(() => {
     if (!user) return;
-    try {
-      const session = await focusService.getActiveSession(user.id);
-      if (session) {
-        setCurrentSession(session);
-        setIsActive(true);
-        const startTime = new Date(session.start_time).getTime();
-        const now = Date.now();
-        const elapsedSeconds = Math.floor((now - startTime) / 1000);
-        setTimeLeft(Math.max(0, DEFAULT_DURATIONS[selectedDuration] - elapsedSeconds));
-      }
-    } catch (error) {
-      console.error('Error loading active session:', error);
-    }
-  };
+    focusService.getActiveSession(user.id).then(session => {
+      if (!session) return;
+      setCurrentSession(session);
+      setIsActive(true);
+      const elapsed = Math.floor((Date.now() - new Date(session.start_time).getTime()) / 1000);
+      const remaining = Math.max(0, sessionMin * 60 - elapsed);
+      setTimeLeft(remaining);
+      setTotalSeconds(sessionMin * 60);
+    }).catch(() => {});
+  }, [user]);
 
-  const handleDurationSelect = (value: string) => {
-    setSelectedDuration(value);
-    if (value === 'custom') {
-      setShowCustomInput(true);
-      setTimeLeft(0);
-    } else {
-      setShowCustomInput(false);
-      setTimeLeft(DEFAULT_DURATIONS[value]);
-      setCustomMinutes('');
-    }
-  };
+  function pickPreset(m: number) {
+    setSessionMin(m);
+    setTimeLeft(m * 60);
+    setTotalSeconds(m * 60);
+    setShowCustom(false);
+    setCustomMin('');
+  }
 
-  const handleBreakDurationSelect = (value: string) => {
-    setSelectedBreakDuration(value);
-    if (value === 'custom') {
-      setShowCustomBreakInput(true);
-      setBreakTimeLeft(0);
-    } else {
-      setShowCustomBreakInput(false);
-      setBreakTimeLeft(DEFAULT_BREAK_DURATIONS[value]);
-      setCustomBreakMinutes('');
-    }
-  };
+  function applyCustom() {
+    const m = parseInt(customMin);
+    if (!m || m < 1 || m > 180) return;
+    setSessionMin(m);
+    setTimeLeft(m * 60);
+    setTotalSeconds(m * 60);
+    setShowCustom(false);
+  }
 
-  const handleCustomDuration = () => {
-    const minutes = parseInt(customMinutes);
-    if (minutes > 0 && minutes <= 120) {
-      setTimeLeft(minutes * 60);
-      setShowCustomInput(false);
-    }
-  };
-
-  const handleCustomBreakDuration = () => {
-    const minutes = parseInt(customBreakMinutes);
-    if (minutes > 0 && minutes <= 30) {
-      setBreakTimeLeft(minutes * 60);
-      setShowCustomBreakInput(false);
-    }
-  };
-
-  const handleStart = async () => {
+  async function handleStart() {
     if (!user) return;
-    if (selectedDuration === 'custom' && (!customMinutes || parseInt(customMinutes) <= 0 || parseInt(customMinutes) > 120)) {
-      return;
-    }
     try {
       const session = await focusService.createSession({
         user_id: user.id,
@@ -126,305 +150,279 @@ const FocusTimer: React.FC<FocusTimerProps> = ({
       });
       setCurrentSession(session);
       setIsActive(true);
-    } catch (error) {
-      console.error('Error starting session:', error);
-    }
-  };
+      setIsPaused(false);
+      setTimeLeft(sessionMin * 60);
+      setTotalSeconds(sessionMin * 60);
+    } catch { }
+  }
 
-  const handleStartBreak = () => {
-    if (selectedBreakDuration === 'custom' && (!customBreakMinutes || parseInt(customBreakMinutes) <= 0 || parseInt(customBreakMinutes) > 30)) {
-      return;
-    }
-    setIsBreakActive(true);
-  };
-
-  const handleComplete = async () => {
+  async function handleComplete() {
     if (!currentSession || !user) return;
     try {
       await focusService.completeSession(currentSession.id, {
         end_time: new Date().toISOString(),
         status: 'completed',
       });
+      await addXP(sessionMin);           // 1 XP per planned minute
       setIsActive(false);
+      setIsPaused(false);
       setCurrentSession(null);
-      if (onSessionComplete) {
-        onSessionComplete();
-      }
-    } catch (error) {
-      console.error('Error completing session:', error);
-    }
-  };
+      setTimeLeft(sessionMin * 60);
+      onSessionComplete?.();
+    } catch { }
+  }
 
-  useEffect(() => {
-    let interval: NodeJS.Timeout;
+  async function handleEnd() {
+    if (!currentSession || !user) return;
+    const elapsed = totalSeconds - timeLeft;
+    const earnedMin = Math.round(elapsed / 60);
+    try {
+      await focusService.completeSession(currentSession.id, {
+        end_time: new Date().toISOString(),
+        status: 'completed',
+      });
+      if (earnedMin > 0) await addXP(earnedMin);
+      setIsActive(false);
+      setIsPaused(false);
+      setCurrentSession(null);
+      setTimeLeft(sessionMin * 60);
+      onSessionComplete?.();
+    } catch { }
+  }
 
-    if (isActive && timeLeft > 0) {
-      interval = setInterval(() => {
-        setTimeLeft((time) => time - 1);
-      }, 1000);
-    } else if (timeLeft === 0 && isActive) {
-      handleComplete();
-    }
+  const progress = totalSeconds > 0 ? 1 - timeLeft / totalSeconds : 0;
+  const mins = Math.floor(timeLeft / 60);
+  const secs = timeLeft % 60;
 
-    return () => clearInterval(interval);
-  }, [isActive, timeLeft]);
-
-  useEffect(() => {
-    let interval: NodeJS.Timeout;
-
-    if (isBreakActive && breakTimeLeft > 0) {
-      interval = setInterval(() => {
-        setBreakTimeLeft((time) => time - 1);
-      }, 1000);
-    } else if (breakTimeLeft === 0 && isBreakActive) {
-      if (onBreakComplete) {
-        onBreakComplete();
-      }
-    }
-
-    return () => clearInterval(interval);
-  }, [isBreakActive, breakTimeLeft]);
-
-  const formatTime = (seconds: number) => {
-    const mins = Math.floor(seconds / 60);
-    const secs = seconds % 60;
-    return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
-  };
-
-  const progress = 1 - timeLeft / (DEFAULT_DURATIONS[selectedDuration] || parseInt(customMinutes) * 60);
-  const breakProgress = 1 - breakTimeLeft / (DEFAULT_BREAK_DURATIONS[selectedBreakDuration] || parseInt(customBreakMinutes) * 60);
-
-  if (isBreak) {
-    if (isBreakActive) {
-      return (
-        <View style={styles.container}>
-          <Text style={styles.title}>Break Time</Text>
-          <Text style={styles.subtitle}>Take a moment to rest and recharge</Text>
-          
-          <View style={styles.timerContainer}>
-            <Text style={styles.timer}>{formatTime(breakTimeLeft)}</Text>
-            <ProgressBar
-              progress={breakProgress}
-              color={theme.colors.primary}
-              style={styles.progressBar}
-            />
-          </View>
-
-          <View style={styles.buttonContainer}>
-            <Button
-              mode="outlined"
-              onPress={() => setIsBreakActive(false)}
-              style={styles.button}
-            >
-              Pause
-            </Button>
-            <Button
-              mode="contained"
-              onPress={() => {
-                setIsBreakActive(false);
-                if (onBreakComplete) {
-                  onBreakComplete();
-                }
-              }}
-              style={styles.button}
-            >
-              Skip
-            </Button>
-          </View>
-        </View>
-      );
-    }
-
+  // ── session active UI ──────────────────────────────────────────────────────
+  if (isActive) {
     return (
-      <View style={styles.container}>
-        <Text style={styles.title}>Break Time</Text>
-        <Text style={styles.subtitle}>Take a moment to rest and recharge</Text>
-        
-        <SegmentedButtons
-          value={selectedBreakDuration}
-          onValueChange={handleBreakDurationSelect}
-          buttons={[
-            { value: '5m', label: '5m' },
-            { value: '10m', label: '10m' },
-            { value: '15m', label: '15m' },
-            { value: 'custom', label: 'Custom' },
-          ]}
-          style={styles.durationButtons}
-        />
-        
-        {showCustomBreakInput && (
-          <View style={styles.customInputContainer}>
-            <TextInput
-              label="Minutes (1-30)"
-              value={customBreakMinutes}
-              onChangeText={setCustomBreakMinutes}
-              keyboardType="numeric"
-              style={styles.customInput}
-              mode="outlined"
-            />
-            <Button 
-              mode="contained" 
-              onPress={handleCustomBreakDuration}
-              disabled={!customBreakMinutes || parseInt(customBreakMinutes) <= 0 || parseInt(customBreakMinutes) > 30}
-            >
-              Set
-            </Button>
-          </View>
-        )}
+      <View style={styles.card}>
+        <Text style={styles.cardLabel}>Focus session</Text>
+        {taskTitle ? <Text style={styles.taskTitle}>"{taskTitle}"</Text> : null}
 
-        <Button
-          mode="contained"
-          onPress={handleStartBreak}
-          disabled={selectedBreakDuration === 'custom' && (!customBreakMinutes || parseInt(customBreakMinutes) <= 0 || parseInt(customBreakMinutes) > 30)}
-          style={styles.button}
-        >
-          Start Break
-        </Button>
+        <View style={{ alignItems: 'center', marginVertical: 16 }}>
+          <Ring size={140} r={58} strokeWidth={10} progress={progress} color={LT.teal}>
+            <Text style={styles.countdownTime}>
+              {String(mins).padStart(2, '0')}:{String(secs).padStart(2, '0')}
+            </Text>
+            <Text style={styles.countdownSub}>remaining</Text>
+          </Ring>
+        </View>
+
+        <View style={styles.sessionButtons}>
+          {isPaused ? (
+            <TouchableOpacity style={[styles.sessionBtn, { backgroundColor: LT.teal }]} onPress={() => setIsPaused(false)}>
+              <Text style={[styles.sessionBtnText, { color: LT.bg }]}>resume</Text>
+            </TouchableOpacity>
+          ) : (
+            <TouchableOpacity style={[styles.sessionBtn, { backgroundColor: LT.surfaceDeep, borderWidth: 0.5, borderColor: LT.outlineFaint }]} onPress={() => setIsPaused(true)}>
+              <Text style={[styles.sessionBtnText, { color: LT.parchmentMuted }]}>pause</Text>
+            </TouchableOpacity>
+          )}
+          <TouchableOpacity style={[styles.sessionBtn, { backgroundColor: LT.surfaceDeep, borderWidth: 0.5, borderColor: LT.outlineFaint }]} onPress={handleEnd}>
+            <Text style={[styles.sessionBtnText, { color: LT.parchmentFaint }]}>end session</Text>
+          </TouchableOpacity>
+        </View>
       </View>
     );
   }
 
+  // ── setup UI ───────────────────────────────────────────────────────────────
   return (
-    <View style={styles.container}>
-      {taskTitle && (
-        <Text style={styles.taskTitle}>Focusing on: {taskTitle}</Text>
-      )}
-      
-      {!isActive ? (
-        <>
-          <Text style={styles.title}>Select Duration</Text>
-          <SegmentedButtons
-            value={selectedDuration}
-            onValueChange={handleDurationSelect}
-            buttons={[
-              { value: '25m', label: '25m' },
-              { value: '45m', label: '45m' },
-              { value: '60m', label: '60m' },
-              { value: 'custom', label: 'Custom' },
+    <View style={styles.card}>
+      <Text style={styles.cardLabel}>Get ready to focus</Text>
+
+      {/* Stepper */}
+      <View style={styles.stepper}>
+        <TouchableOpacity
+          style={styles.stepBtn}
+          onPress={() => pickPreset(Math.max(5, sessionMin - 5))}
+        >
+          <Text style={styles.stepBtnText}>−</Text>
+        </TouchableOpacity>
+        <View style={{ alignItems: 'center' }}>
+          <Text style={styles.stepValue}>{sessionMin}</Text>
+          <Text style={styles.stepUnit}>mins</Text>
+        </View>
+        <TouchableOpacity
+          style={styles.stepBtn}
+          onPress={() => pickPreset(Math.min(180, sessionMin + 5))}
+        >
+          <Text style={styles.stepBtnText}>+</Text>
+        </TouchableOpacity>
+      </View>
+
+      {/* Presets */}
+      <View style={styles.presets}>
+        {PRESETS.map(m => (
+          <TouchableOpacity
+            key={m}
+            style={[
+              styles.presetBtn,
+              sessionMin === m && { backgroundColor: LT.teal + '22', borderColor: LT.teal },
             ]}
-            style={styles.durationButtons}
-          />
-          
-          {showCustomInput && (
-            <View style={styles.customInputContainer}>
-              <TextInput
-                label="Minutes (1-120)"
-                value={customMinutes}
-                onChangeText={setCustomMinutes}
-                keyboardType="numeric"
-                style={styles.customInput}
-                mode="outlined"
-              />
-              <Button 
-                mode="contained" 
-                onPress={handleCustomDuration}
-                disabled={!customMinutes || parseInt(customMinutes) <= 0 || parseInt(customMinutes) > 120}
-              >
-                Set
-              </Button>
-            </View>
-          )}
-
-          <Button
-            mode="contained"
-            onPress={handleStart}
-            disabled={selectedDuration === 'custom' && (!customMinutes || parseInt(customMinutes) <= 0 || parseInt(customMinutes) > 120)}
-            style={styles.button}
+            onPress={() => pickPreset(m)}
           >
-            Start Focus Session
-          </Button>
-        </>
-      ) : (
-        <>
-          <View style={styles.timerContainer}>
-            <Text style={styles.timer}>{formatTime(timeLeft)}</Text>
-            <ProgressBar
-              progress={progress}
-              color={theme.colors.primary}
-              style={styles.progressBar}
-            />
-          </View>
+            <Text style={[styles.presetText, sessionMin === m && { color: LT.teal }]}>{m}m</Text>
+          </TouchableOpacity>
+        ))}
+        <TouchableOpacity
+          style={[styles.presetBtn, showCustom && { borderColor: LT.amber }]}
+          onPress={() => setShowCustom(v => !v)}
+        >
+          <Text style={[styles.presetText, showCustom && { color: LT.amber }]}>…</Text>
+        </TouchableOpacity>
+      </View>
 
-          <View style={styles.buttonContainer}>
-            <Button
-              mode="outlined"
-              onPress={() => setIsActive(false)}
-              style={styles.button}
-            >
-              Pause
-            </Button>
-            <Button
-              mode="contained"
-              onPress={handleComplete}
-              style={styles.button}
-            >
-              Complete
-            </Button>
-          </View>
-        </>
+      {showCustom && (
+        <View style={styles.customRow}>
+          <TextInput
+            mode="outlined"
+            label="mins (1–180)"
+            value={customMin}
+            onChangeText={setCustomMin}
+            keyboardType="numeric"
+            style={{ flex: 1, height: 44 }}
+            outlineColor={LT.outlineFaint}
+            activeOutlineColor={LT.amber}
+            textColor={LT.parchment}
+          />
+          <TouchableOpacity style={[styles.applyBtn]} onPress={applyCustom}>
+            <Text style={{ color: LT.bg, fontWeight: '700', fontSize: 12 }}>set</Text>
+          </TouchableOpacity>
+        </View>
       )}
+
+      <TouchableOpacity style={styles.startBtn} onPress={handleStart}>
+        <Text style={styles.startBtnText}>Start focus session</Text>
+      </TouchableOpacity>
     </View>
   );
 };
 
+// ─── styles ──────────────────────────────────────────────────────────────────
+
 const styles = StyleSheet.create({
-  container: {
-    padding: 20,
-    alignItems: 'center',
-  },
-  title: {
-    fontSize: 24,
-    fontWeight: 'bold',
+  card: {
+    backgroundColor: LT.surfaceDeep,
+    borderRadius: 14,
+    padding: 16,
+    borderWidth: 0.5,
+    borderColor: LT.outlineFaint,
     marginBottom: 16,
   },
-  subtitle: {
-    fontSize: 16,
-    color: '#666',
-    marginBottom: 16,
-    textAlign: 'center',
+  cardLabel: {
+    fontSize: 11,
+    color: LT.parchmentFaint,
+    marginBottom: 12,
   },
   taskTitle: {
-    fontSize: 18,
-    marginBottom: 16,
+    fontSize: 12,
+    color: LT.parchmentMuted,
+    fontStyle: 'italic',
+    marginBottom: 8,
     textAlign: 'center',
   },
-  timerContainer: {
-    width: '100%',
-    alignItems: 'center',
-    marginBottom: 24,
+  countdownTime: {
+    fontSize: 30,
+    fontWeight: '700',
+    color: LT.parchment,
+    fontVariant: ['tabular-nums'],
   },
-  timer: {
-    fontSize: 48,
-    fontWeight: 'bold',
-    marginBottom: 16,
+  countdownSub: {
+    fontSize: 9,
+    color: LT.parchmentFaint,
+    marginTop: 2,
   },
-  progressBar: {
-    width: '100%',
-    height: 8,
-    borderRadius: 4,
-  },
-  buttonContainer: {
+  sessionButtons: {
     flexDirection: 'row',
-    gap: 12,
+    gap: 8,
   },
-  button: {
-    minWidth: 120,
+  sessionBtn: {
+    flex: 1,
+    paddingVertical: 9,
+    borderRadius: 8,
+    alignItems: 'center',
   },
-  durationButtons: {
-    marginBottom: 16,
-    width: '100%',
+  sessionBtnText: {
+    fontSize: 12,
+    fontWeight: '600',
   },
-  customInputContainer: {
+  stepper: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 10,
+    justifyContent: 'center',
+    gap: 20,
     marginBottom: 16,
-    width: '100%',
+  },
+  stepBtn: {
+    width: 32,
+    height: 32,
+    borderRadius: 8,
+    backgroundColor: LT.surfaceElevated,
+    borderWidth: 0.5,
+    borderColor: LT.outlineFaint,
+    alignItems: 'center',
     justifyContent: 'center',
   },
-  customInput: {
-    width: 120,
+  stepBtnText: {
+    fontSize: 20,
+    color: LT.parchmentMuted,
+    lineHeight: 24,
+  },
+  stepValue: {
+    fontSize: 36,
+    fontWeight: '700',
+    color: LT.parchment,
+  },
+  stepUnit: {
+    fontSize: 10,
+    color: LT.parchmentFaint,
+  },
+  presets: {
+    flexDirection: 'row',
+    gap: 6,
+    marginBottom: 14,
+  },
+  presetBtn: {
+    flex: 1,
+    paddingVertical: 6,
+    borderRadius: 8,
+    backgroundColor: LT.bg,
+    borderWidth: 0.5,
+    borderColor: LT.outlineFaint,
+    alignItems: 'center',
+  },
+  presetText: {
+    fontSize: 11,
+    color: LT.parchmentFaint,
+  },
+  customRow: {
+    flexDirection: 'row',
+    gap: 8,
+    alignItems: 'center',
+    marginBottom: 14,
+  },
+  applyBtn: {
+    backgroundColor: LT.amber,
+    borderRadius: 8,
+    paddingHorizontal: 14,
+    height: 44,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  startBtn: {
+    backgroundColor: LT.teal,
+    borderRadius: 10,
+    paddingVertical: 13,
+    alignItems: 'center',
+  },
+  startBtnText: {
+    color: LT.bg,
+    fontWeight: '700',
+    fontSize: 14,
   },
 });
 
-export default FocusTimer; 
+export default FocusTimer;

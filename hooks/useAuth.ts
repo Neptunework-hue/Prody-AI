@@ -111,7 +111,7 @@ export const useAuth = () => {
   const signUp = async (email: string, password: string, username: string) => {
     try {
       console.log('Starting registration for:', { email, username });
-      
+
       // First check if username is already taken
       const { data: existingProfiles, error: checkError } = await supabase
         .from('profiles')
@@ -150,44 +150,7 @@ export const useAuth = () => {
       }
 
       console.log('Auth user created with ID:', user.id);
-      
-      // Wait a moment to ensure the auth user is fully created
-      await new Promise(resolve => setTimeout(resolve, 1000));
-
-      // Create a profile record using service role client
-      const { error: profileError } = await supabase
-        .from('profiles')
-        .insert([
-          {
-            id: user.id,
-            email: email,
-            username: username,
-          },
-        ])
-        .select();
-
-      if (profileError) {
-        console.error('Error creating profile:', profileError);
-        // If we get an RLS error, try to create the profile using a different approach
-        if (profileError.code === '42501') {
-          console.log('RLS error, trying alternative profile creation');
-          const { error: altProfileError } = await supabase.rpc('create_profile', {
-            user_id: user.id,
-            user_email: email,
-            user_username: username
-          });
-
-          if (altProfileError) {
-            console.error('Error creating profile via RPC:', altProfileError);
-            return { error: altProfileError };
-          }
-          console.log('Profile created successfully via RPC');
-          return { error: null };
-        }
-        return { error: profileError };
-      }
-
-      console.log('Profile created successfully');
+      // Profile is created automatically by the database trigger (handle_new_user)
       return { error: null };
     } catch (error) {
       console.log('Unexpected error during registration:', error);
@@ -220,4 +183,4 @@ export const useAuth = () => {
     signOut,
     resetPassword,
   };
-}; 
+};
