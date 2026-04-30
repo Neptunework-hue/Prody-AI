@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { View, StyleSheet, Text, ScrollView } from 'react-native';
+import { View, StyleSheet, Text, ScrollView, Platform, NativeSyntheticEvent, TextInputContentSizeChangeEventData } from 'react-native';
 import { TextInput, Button, Chip, IconButton } from 'react-native-paper';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { Task } from '../../types/task';
@@ -29,6 +29,12 @@ async function scheduleTaskNotification(task: Partial<Task>) {
   if (status !== 'granted') {
     await Notifications.requestPermissionsAsync();
   }
+  if (Platform.OS === 'android') {
+    await Notifications.setNotificationChannelAsync('task-reminders', {
+      name: 'Task Reminders',
+      importance: Notifications.AndroidImportance.DEFAULT,
+    });
+  }
   if (task.notificationId) {
     await Notifications.cancelScheduledNotificationAsync(task.notificationId);
   }
@@ -37,17 +43,21 @@ async function scheduleTaskNotification(task: Partial<Task>) {
   if (notifyDate < now) {
     notifyDate.setDate(notifyDate.getDate() + 1);
   }
+  const trigger: any = {
+    hour: notifyDate.getHours(),
+    minute: notifyDate.getMinutes(),
+    repeats: true,
+  };
+  if (Platform.OS === 'android') {
+    trigger.channelId = 'task-reminders';
+  }
   const notificationId = await Notifications.scheduleNotificationAsync({
     content: {
       title: task.title,
       body: task.description || 'Task Reminder',
       sound: true,
     },
-    trigger: {
-      hour: notifyDate.getHours(),
-      minute: notifyDate.getMinutes(),
-      repeats: true,
-    } as any,
+    trigger,
   });
   return notificationId;
 }
@@ -107,6 +117,7 @@ const TaskForm: React.FC<TaskFormProps> = ({ task, folders = [], onRemoveFolder,
   const styles = useMemo(() => createTaskFormStyles(c), [c]);
   const [title, setTitle] = useState(task?.title || '');
   const [description, setDescription] = useState(task?.description || '');
+  const [descHeight, setDescHeight] = useState(80);
   const [xpInput, setXpInput] = useState(defaultXpString(task));
   const [folderId, setFolderId] = useState<string | null>(task?.folder_id ?? null);
   const [deadline, setDeadline] = useState<Date | null>(
@@ -183,11 +194,13 @@ const TaskForm: React.FC<TaskFormProps> = ({ task, folders = [], onRemoveFolder,
         label="Description"
         value={description}
         onChangeText={setDescription}
-        style={styles.input}
+        style={[styles.input, { height: Math.max(80, descHeight + 24) }]}
         mode="outlined"
         multiline
-        numberOfLines={3}
         textColor={c.tx}
+        onContentSizeChange={(e: NativeSyntheticEvent<TextInputContentSizeChangeEventData>) =>
+          setDescHeight(e.nativeEvent.contentSize.height)
+        }
       />
 
       <Text style={styles.sectionLabel}>XP reward</Text>

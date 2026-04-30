@@ -1,13 +1,15 @@
 import React, { useMemo } from 'react';
-import { View, StyleSheet, Platform, TouchableOpacity, Text } from 'react-native';
+import { View, StyleSheet, TouchableOpacity, Text } from 'react-native';
 import { useRouter, usePathname } from 'expo-router';
 import { IconButton } from 'react-native-paper';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { tap } from '../utils/feedback';
 import { FONT_SERIF, type ThemeColors } from '../constants/lifeTrackerDesign';
 import { useAppTheme } from '../contexts/AppThemeContext';
 
 /** Bottom nav height — matches docs/design.md shell (~60px bar) */
 export const BOTTOM_NAV_HEIGHT = 60;
-export const BOTTOM_NAV_PADDING = Platform.OS === 'ios' ? 18 : 8;
+export const BOTTOM_NAV_PADDING = 8;
 export const BOTTOM_NAV_TOTAL_HEIGHT = BOTTOM_NAV_HEIGHT + BOTTOM_NAV_PADDING;
 
 const NAV_ITEMS = [
@@ -82,9 +84,10 @@ export default function BottomNavBar() {
   const { colors: c } = useAppTheme();
   const styles = useMemo(() => createNavStyles(c), [c]);
   const activeIndex = NAV_ITEMS.findIndex((item) => pathname.includes(item.route));
+  const insets = useSafeAreaInsets();
 
   return (
-    <View style={styles.outerContainer}>
+    <View style={[styles.outerContainer, { paddingBottom: insets.bottom + BOTTOM_NAV_PADDING }]}>
       <View style={styles.container}>
         {NAV_ITEMS.map((item, idx) => {
           const isActive = idx === activeIndex;
@@ -93,7 +96,7 @@ export default function BottomNavBar() {
               key={item.route}
               style={[styles.navItem, isActive && styles.navItemActive]}
               activeOpacity={0.85}
-              onPress={() => router.push(`/(app)/${item.route}`)}
+              onPress={() => { tap(); router.push(`/(app)/${item.route}`); }}
             >
               {isActive ? <View style={styles.activeTopBar} /> : null}
               <IconButton

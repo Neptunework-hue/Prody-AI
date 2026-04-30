@@ -6,7 +6,6 @@
     "scheme": "acme",
     "orientation": "portrait",
     "userInterfaceStyle": "dark",
-    "owner": "neptune249",
     "assetBundlePatterns": ["**/*"],
     "plugins": [
       "expo-router",
@@ -20,10 +19,7 @@
       ]
     ],
     "extra": {
-      "router": {},
-      "eas": {
-        "projectId": "3a8f1351-c043-4cba-be68-8dc80b6df797"
-      }
+      "router": {}
     },
     "ios": {
       "supportsTablet": true,

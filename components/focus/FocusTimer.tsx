@@ -3,11 +3,12 @@
  * Presets 25 / 45 / 60 / 90 + custom, stepper, pause / resume / end session; Supabase session lifecycle preserved.
  */
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
-import { View, StyleSheet, TouchableOpacity } from 'react-native';
+import { View, StyleSheet, TouchableOpacity, Modal, Vibration } from 'react-native';
 import { Text, TextInput } from 'react-native-paper';
 import Svg, { Circle } from 'react-native-svg';
 import { focusService } from '../../services/supabase/focus';
 import { useAuth } from '../../hooks/useAuth';
+import { soundComplete, tapMedium, tapHeavy, tap } from '../../utils/feedback';
 import { FocusSession } from '../../types/focus';
 import { FONT_SERIF, type ThemeColors } from '../../constants/lifeTrackerDesign';
 import { useAppTheme } from '../../contexts/AppThemeContext';
@@ -203,6 +204,46 @@ function createFocusTimerStyles(c: ThemeColors) {
       fontSize: 14,
       fontFamily: FONT_SERIF,
     },
+    modalOverlay: {
+      flex: 1,
+      backgroundColor: 'rgba(0,0,0,0.75)',
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    modalCard: {
+      width: 300,
+      borderRadius: 20,
+      borderWidth: 1.5,
+      padding: 28,
+      alignItems: 'center',
+      gap: 8,
+    },
+    modalEmoji: {
+      fontSize: 48,
+      marginBottom: 4,
+    },
+    modalTitle: {
+      fontSize: 22,
+      fontWeight: '700',
+      fontFamily: FONT_SERIF,
+    },
+    modalSub: {
+      fontSize: 14,
+      fontFamily: FONT_SERIF,
+      marginBottom: 8,
+      textAlign: 'center',
+    },
+    modalBtn: {
+      marginTop: 8,
+      borderRadius: 10,
+      paddingVertical: 12,
+      paddingHorizontal: 40,
+    },
+    modalBtnText: {
+      fontWeight: '700',
+      fontSize: 15,
+      fontFamily: FONT_SERIF,
+    },
   });
 }
 
@@ -220,70 +261,94 @@ const FocusTimer: React.FC<FocusTimerProps> = ({ taskId, taskTitle, onSessionCom
   const [timeLeft, setTimeLeft] = useState(25 * 60);
   const [totalSeconds, setTotalSeconds] = useState(25 * 60);
   const [currentSession, setCurrentSession] = useState<FocusSession | null>(null);
+  const [showComplete, setShowComplete] = useState(false);
+  const [completedMin, setCompletedMin] = useState(0);
 
   const currentSessionRef = useRef<FocusSession | null>(null);
   useEffect(() => {
     currentSessionRef.current = currentSession;
   }, [currentSession]);
 
-  const handleCompleteRef = useRef<() => void>(() => {});
+  const completingRef = useRef(false);
+
   const handleComplete = useCallback(async () => {
+    if (completingRef.current) return;
     const session = currentSessionRef.current;
     if (!session || !user) return;
+    completingRef.current = true;
     try {
       await focusService.completeSession(session.id, {
         end_time: new Date().toISOString(),
         status: 'completed',
       });
+    } catch {
+      /* ignore network errors */
+    } finally {
+      completingRef.current = false;
+      // buzz pattern: on 500ms, off 200ms, on 500ms, off 200ms, on 500ms
+      Vibration.vibrate([0, 500, 200, 500, 200, 500]);
+      soundComplete();
+      setCompletedMin(sessionMin);
+      setShowComplete(true);
       setIsActive(false);
       setIsPaused(false);
       setCurrentSession(null);
       setTimeLeft(sessionMin * 60);
       setTotalSeconds(sessionMin * 60);
       onSessionComplete?.();
-    } catch {
-      /* ignore */
     }
   }, [user, sessionMin, onSessionComplete]);
 
+  const handleCompleteRef = useRef(handleComplete);
   useEffect(() => {
-    handleCompleteRef.current = () => {
-      void handleComplete();
-    };
+    handleCompleteRef.current = handleComplete;
   }, [handleComplete]);
 
+  // Countdown tick — just decrements, no side effects
   useEffect(() => {
     if (!isActive || isPaused || timeLeft <= 0) return;
     const id = setInterval(() => {
-      setTimeLeft((t) => {
-        if (t <= 1) {
-          clearInterval(id);
-          handleCompleteRef.current();
-          return 0;
-        }
-        return t - 1;
-      });
+      setTimeLeft((t) => Math.max(0, t - 1));
     }, 1000);
     return () => clearInterval(id);
   }, [isActive, isPaused]);
 
+  // Completion trigger — fires when timeLeft reaches 0
+  useEffect(() => {
+    if (isActive && !isPaused && timeLeft === 0) {
+      void handleCompleteRef.current();
+    }
+  }, [timeLeft, isActive, isPaused]);
+
+  // Restore active session on mount
   useEffect(() => {
     if (!user) return;
     focusService
       .getActiveSession(user.id)
       .then((session) => {
         if (!session) return;
-        setCurrentSession(session);
-        setIsActive(true);
+        // Parse planned duration stored in notes (e.g. "25")
+        const plannedMin = parseInt(session.notes || '', 10);
+        const duration = plannedMin > 0 ? plannedMin : 25;
         const elapsed = Math.floor((Date.now() - new Date(session.start_time).getTime()) / 1000);
-        const remaining = Math.max(0, sessionMin * 60 - elapsed);
+        const remaining = duration * 60 - elapsed;
+        if (remaining <= 0) {
+          // Session already expired — complete it immediately
+          currentSessionRef.current = session;
+          void handleCompleteRef.current();
+          return;
+        }
+        setCurrentSession(session);
+        setSessionMin(duration);
+        setIsActive(true);
         setTimeLeft(remaining);
-        setTotalSeconds(sessionMin * 60);
+        setTotalSeconds(duration * 60);
       })
       .catch(() => {});
   }, [user]);
 
   function pickPreset(m: number) {
+    tap();
     setSessionMin(m);
     setTimeLeft(m * 60);
     setTotalSeconds(m * 60);
@@ -302,6 +367,7 @@ const FocusTimer: React.FC<FocusTimerProps> = ({ taskId, taskTitle, onSessionCom
 
   async function handleStart() {
     if (!user) return;
+    tapMedium();
     try {
       const session = await focusService.createSession({
         user_id: user.id,
@@ -309,7 +375,7 @@ const FocusTimer: React.FC<FocusTimerProps> = ({ taskId, taskTitle, onSessionCom
         start_time: new Date().toISOString(),
         status: 'active',
         interruptions: 0,
-        notes: '',
+        notes: String(sessionMin), // store planned duration for restore
       });
       setCurrentSession(session);
       setIsActive(true);
@@ -323,6 +389,7 @@ const FocusTimer: React.FC<FocusTimerProps> = ({ taskId, taskTitle, onSessionCom
 
   async function handleEnd() {
     if (!currentSession || !user) return;
+    tapHeavy();
     try {
       await focusService.completeSession(currentSession.id, {
         end_time: new Date().toISOString(),
@@ -344,65 +411,88 @@ const FocusTimer: React.FC<FocusTimerProps> = ({ taskId, taskTitle, onSessionCom
   const secs = timeLeft % 60;
 
   const tealTint = `${c.teal}22`;
+  const xpEarned = completedMin;
 
-  if (isActive) {
-    return (
-      <View style={styles.card}>
-        <Text style={styles.cardLabel}>Focus session</Text>
-        {taskTitle ? <Text style={styles.taskTitle}>&ldquo;{taskTitle}&rdquo;</Text> : null}
-
-        <View style={{ alignItems: 'center', marginVertical: 16 }}>
-          <Ring
-            size={140}
-            r={58}
-            strokeWidth={10}
-            progress={progress}
-            trackColor={c.outlineFaint}
-            color={c.teal}
-          >
-            <Text style={styles.countdownTime}>
-              {String(mins).padStart(2, '0')}:{String(secs).padStart(2, '0')}
+  return (
+    <>
+      {/* ── Timer complete modal ── */}
+      <Modal
+        visible={showComplete}
+        transparent
+        animationType="fade"
+        onRequestClose={() => { Vibration.cancel(); setShowComplete(false); }}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={[styles.modalCard, { backgroundColor: c.surfaceDeep, borderColor: c.teal }]}>
+            <Text style={[styles.modalEmoji]}>🎯</Text>
+            <Text style={[styles.modalTitle, { color: c.teal }]}>Session Complete!</Text>
+            <Text style={[styles.modalSub, { color: c.parchmentMuted }]}>
+              {completedMin} min focused · +{xpEarned} XP earned
             </Text>
-            <Text style={styles.countdownSub}>remaining</Text>
-          </Ring>
-        </View>
-
-        <View style={styles.sessionButtons}>
-          {isPaused ? (
             <TouchableOpacity
-              style={[styles.sessionBtn, { backgroundColor: c.teal }]}
-              onPress={() => setIsPaused(false)}
+              style={[styles.modalBtn, { backgroundColor: c.teal }]}
+              onPress={() => { Vibration.cancel(); setShowComplete(false); }}
             >
-              <Text style={[styles.sessionBtnText, { color: c.onAccent }]}>resume</Text>
+              <Text style={[styles.modalBtnText, { color: c.onAccent }]}>Dismiss</Text>
             </TouchableOpacity>
-          ) : (
+          </View>
+        </View>
+      </Modal>
+
+      {isActive ? (
+        <View style={styles.card}>
+          <Text style={styles.cardLabel}>Focus session</Text>
+          {taskTitle ? <Text style={styles.taskTitle}>&ldquo;{taskTitle}&rdquo;</Text> : null}
+
+          <View style={{ alignItems: 'center', marginVertical: 16 }}>
+            <Ring
+              size={140}
+              r={58}
+              strokeWidth={10}
+              progress={progress}
+              trackColor={c.outlineFaint}
+              color={c.teal}
+            >
+              <Text style={styles.countdownTime}>
+                {String(mins).padStart(2, '0')}:{String(secs).padStart(2, '0')}
+              </Text>
+              <Text style={styles.countdownSub}>remaining</Text>
+            </Ring>
+          </View>
+
+          <View style={styles.sessionButtons}>
+            {isPaused ? (
+              <TouchableOpacity
+                style={[styles.sessionBtn, { backgroundColor: c.teal }]}
+                onPress={() => setIsPaused(false)}
+              >
+                <Text style={[styles.sessionBtnText, { color: c.onAccent }]}>resume</Text>
+              </TouchableOpacity>
+            ) : (
+              <TouchableOpacity
+                style={[
+                  styles.sessionBtn,
+                  { backgroundColor: c.surfaceDeep, borderWidth: 0.5, borderColor: c.outlineFaint },
+                ]}
+                onPress={() => setIsPaused(true)}
+              >
+                <Text style={[styles.sessionBtnText, { color: c.parchmentMuted }]}>pause</Text>
+              </TouchableOpacity>
+            )}
             <TouchableOpacity
               style={[
                 styles.sessionBtn,
                 { backgroundColor: c.surfaceDeep, borderWidth: 0.5, borderColor: c.outlineFaint },
               ]}
-              onPress={() => setIsPaused(true)}
+              onPress={handleEnd}
             >
-              <Text style={[styles.sessionBtnText, { color: c.parchmentMuted }]}>pause</Text>
+              <Text style={[styles.sessionBtnText, { color: c.parchmentFaint }]}>end session</Text>
             </TouchableOpacity>
-          )}
-          <TouchableOpacity
-            style={[
-              styles.sessionBtn,
-              { backgroundColor: c.surfaceDeep, borderWidth: 0.5, borderColor: c.outlineFaint },
-            ]}
-            onPress={handleEnd}
-          >
-            <Text style={[styles.sessionBtnText, { color: c.parchmentFaint }]}>end session</Text>
-          </TouchableOpacity>
+          </View>
         </View>
-      </View>
-    );
-  }
-
-  return (
-    <View style={styles.card}>
-      <Text style={styles.cardLabel}>Get ready to focus</Text>
+      ) : (
+        <View style={styles.card}>
+          <Text style={styles.cardLabel}>Get ready to focus</Text>
 
       <View style={styles.stepper}>
         <TouchableOpacity style={styles.stepBtn} onPress={() => pickPreset(Math.max(5, sessionMin - 5))}>
@@ -457,10 +547,12 @@ const FocusTimer: React.FC<FocusTimerProps> = ({ taskId, taskTitle, onSessionCom
         </View>
       )}
 
-      <TouchableOpacity style={styles.startBtn} onPress={handleStart}>
-        <Text style={styles.startBtnText}>Start focus session</Text>
-      </TouchableOpacity>
-    </View>
+          <TouchableOpacity style={styles.startBtn} onPress={handleStart}>
+            <Text style={styles.startBtnText}>Start focus session</Text>
+          </TouchableOpacity>
+        </View>
+      )}
+    </>
   );
 };
 

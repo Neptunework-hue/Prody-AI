@@ -892,6 +892,7 @@ export default function ChatScreen() {
   const heardSpeechRef = useRef(false);
   const autoSilenceFinishRef = useRef(false);
   const finishVoiceRecordingRef = useRef<() => Promise<void>>(async () => {});
+  const handleMicPressRef = useRef<() => Promise<void>>(async () => {});
   /** User closed overlay or left tab — skip applying AI/TTS from an in-flight voice turn. */
   const voiceOverlayCancelledRef = useRef(false);
   const insets = useSafeAreaInsets();
@@ -1146,7 +1147,7 @@ export default function ChatScreen() {
         setVoiceSession('speaking');
         speakBot(stripMarkdown(cachedResponse.text), {
           onDone: () => {
-            if (!voiceOverlayCancelledRef.current) setVoiceSession(null);
+            if (!voiceOverlayCancelledRef.current) void handleMicPressRef.current();
           },
           onStopped: () => {
             if (!voiceOverlayCancelledRef.current) setVoiceSession(null);
@@ -1197,7 +1198,7 @@ export default function ChatScreen() {
       setVoiceSession('speaking');
       speakBot(stripMarkdown(aiReply.text), {
         onDone: () => {
-          if (!voiceOverlayCancelledRef.current) setVoiceSession(null);
+          if (!voiceOverlayCancelledRef.current) void handleMicPressRef.current();
         },
         onStopped: () => {
           if (!voiceOverlayCancelledRef.current) setVoiceSession(null);
@@ -1245,7 +1246,29 @@ export default function ChatScreen() {
       lastSoundTimeRef.current = null;
 
       const rec = new Audio.Recording();
-      await rec.prepareToRecordAsync(Audio.RecordingOptionsPresets.HIGH_QUALITY);
+      await rec.prepareToRecordAsync({
+        isMeteringEnabled: true,
+        android: {
+          extension: '.m4a',
+          outputFormat: Audio.AndroidOutputFormat.MPEG_4,
+          audioEncoder: Audio.AndroidAudioEncoder.AAC,
+          sampleRate: 16000,
+          numberOfChannels: 1,
+          bitRate: 32000,
+        },
+        ios: {
+          extension: '.m4a',
+          outputFormat: Audio.IOSOutputFormat.MPEG4AAC,
+          audioQuality: Audio.IOSAudioQuality.LOW,
+          sampleRate: 16000,
+          numberOfChannels: 1,
+          bitRate: 32000,
+          linearPCMBitDepth: 16,
+          linearPCMIsBigEndian: false,
+          linearPCMIsFloat: false,
+        },
+        web: {},
+      });
       rec.setProgressUpdateInterval(200);
       rec.setOnRecordingStatusUpdate(status => {
         if (!status.isRecording || autoSilenceFinishRef.current) return;
@@ -1277,6 +1300,8 @@ export default function ChatScreen() {
       Alert.alert('Voice', 'Could not start recording.');
     }
   };
+
+  handleMicPressRef.current = handleMicPress;
 
   // Handle quick reply button click
   const handleQuickReply = async (suggestion: string) => {
@@ -1316,42 +1341,46 @@ export default function ChatScreen() {
     const isBot = item.sender === 'bot';
     const displayText = isBot ? stripMarkdown(item.text) : item.text;
     return (
-      <View style={[styles.messageRow, isBot ? styles.botRow : styles.userRow]}>
-        {isBot && (
-          <View style={styles.oracleAvatar}>
-            <MaterialCommunityIcons name="star-four-points" size={22} color={c.amber} />
-          </View>
-        )}
-        <View style={[styles.bubble, isBot ? styles.botBubble : styles.userBubble]}>
-          {item.loading ? (
-            <View style={{ flexDirection: 'row', alignItems: 'flex-start' }}>
-              <Text style={[styles.messageText, styles.botText, { flex: 1, marginRight: 8 }]}>
-                {item.text && item.text !== 'Thinking...'
-                  ? stripMarkdown(item.text)
-                  : 'Thinking…'}
-              </Text>
-              {(!item.text || item.text === 'Thinking...') && <TypingIndicator />}
+      <View>
+        <View style={[styles.messageRow, isBot ? styles.botRow : styles.userRow]}>
+          {isBot && (
+            <View style={styles.oracleAvatar}>
+              <MaterialCommunityIcons name="star-four-points" size={22} color={c.amber} />
             </View>
-          ) : (
-            <Text style={[styles.messageText, isBot ? styles.botText : styles.userText]}>{displayText}</Text>
+          )}
+          <View style={[styles.bubble, isBot ? styles.botBubble : styles.userBubble]}>
+            {item.loading ? (
+              <View style={{ flexDirection: 'row', alignItems: 'flex-start' }}>
+                <Text style={[styles.messageText, styles.botText, { flex: 1, marginRight: 8 }]}>
+                  {item.text && item.text !== 'Thinking...'
+                    ? stripMarkdown(item.text)
+                    : 'Thinking…'}
+                </Text>
+                {(!item.text || item.text === 'Thinking...') && <TypingIndicator />}
+              </View>
+            ) : (
+              <Text style={[styles.messageText, isBot ? styles.botText : styles.userText]}>{displayText}</Text>
+            )}
+            {isBot && !item.loading && (
+              <View style={{ flexDirection: 'row', justifyContent: 'flex-end', marginTop: 4 }}>
+                <IconButton
+                  icon={speakingId === item.id ? 'pause' : 'volume-high'}
+                  size={18}
+                  iconColor={speakingId === item.id ? c.amber : c.tx2}
+                  onPress={() => handlePlayPause(item.id, displayText)}
+                  style={{ margin: 0 }}
+                  accessibilityLabel={speakingId === item.id ? 'Pause reading aloud' : 'Read message aloud'}
+                />
+              </View>
+            )}
+          </View>
+          {!isBot && (
+            <Avatar.Icon icon="account" size={40} style={[styles.avatar, { backgroundColor: c.surf }]} color={c.tx} />
           )}
         </View>
-        {isBot && !item.loading && (
-          <IconButton
-            icon={speakingId === item.id ? 'pause' : 'play'}
-            size={24}
-            iconColor={c.amber}
-            onPress={() => handlePlayPause(item.id, displayText)}
-            style={{ marginLeft: 0 }}
-            accessibilityLabel={speakingId === item.id ? 'Pause reading aloud' : 'Play message aloud'}
-          />
-        )}
-        {!isBot && (
-          <Avatar.Icon icon="account" size={40} style={[styles.avatar, { backgroundColor: c.surf }]} color={c.tx} />
-        )}
-        {/* Quick reply buttons for suggestions */}
+        {/* Quick reply buttons below the bubble row */}
         {isBot && item.suggestions && item.suggestions.length > 0 && !item.loading && (
-          <View style={{ flexDirection: 'row', flexWrap: 'wrap', marginTop: 4 }}>
+          <View style={{ flexDirection: 'row', flexWrap: 'wrap', marginTop: 4, paddingLeft: 48 }}>
             {item.suggestions.map((suggestion, idx) => (
               <Button
                 key={idx}

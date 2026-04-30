@@ -555,8 +555,8 @@ export default function DashboardScreen() {
   }, [allTasksCache, focusTodayMin, habitsList, habitHistoryFull, calendarDayKey]);
 
   const displayName = useMemo(() => {
-    const meta = user?.user_metadata as { full_name?: string; name?: string } | undefined;
-    return meta?.full_name?.trim() || meta?.name?.trim() || user?.email?.split('@')[0] || 'Hero';
+    const meta = user?.user_metadata as { full_name?: string; name?: string; username?: string } | undefined;
+    return meta?.full_name?.trim() || meta?.name?.trim() || meta?.username?.trim() || user?.email?.split('@')[0] || 'Hero';
   }, [user]);
 
   const taskMetaLine = (task: Task) => {
@@ -673,7 +673,7 @@ export default function DashboardScreen() {
               keyboardShouldPersistTaps="handled"
             >
               {activeQuestRows.map((row) => (
-                <View key={row.id} style={styles.questRow}>
+                <Pressable key={row.id} style={styles.questRow} onPress={() => router.push('/(app)/tasks')}>
                   <View style={styles.questTop}>
                     <Text numberOfLines={1} style={[styles.questTitle, { color: shell.tx }]}>
                       {row.title}
@@ -708,7 +708,7 @@ export default function DashboardScreen() {
                     </View>
                   </View>
                   <ProgressBar progress={row.progress / 100} color={row.color} style={styles.questBar} />
-                </View>
+                </Pressable>
               ))}
             </ScrollView>
           )}

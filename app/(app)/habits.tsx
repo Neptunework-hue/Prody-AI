@@ -177,7 +177,6 @@ export default function HabitsScreen() {
       }
       const habitData = {
         user_id: user.id,
-        userId: user.id,
         title: form.title,
         description: form.description,
         progress: 0,
@@ -185,8 +184,8 @@ export default function HabitsScreen() {
         streak: 0,
         history: [],
         days: form.frequency === 'daily' ? [0, 1, 2, 3, 4, 5, 6] : form.days,
-        notifyTime: form.notifyTime,
-        notification_id: notificationId,
+        notify_time: form.notifyTime ?? null,
+        notification_id: notificationId ?? null,
       };
       const created = await habitService.addHabit(habitData);
       if (form.folderId) {

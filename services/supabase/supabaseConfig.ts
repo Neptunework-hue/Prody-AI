@@ -1,17 +1,15 @@
 /**
  * Supabase client credentials from Expo public env (embedded at bundle time).
  * Set EXPO_PUBLIC_SUPABASE_URL and EXPO_PUBLIC_SUPABASE_ANON_KEY in `.env`, then restart Expo.
- *
- * Fallbacks match the project’s default Supabase instance so local dev works before `.env` exists;
- * override via `.env` for your own project.
  */
-const FALLBACK_URL = 'https://bdvykloyemssejhxcalz.supabase.co';
-const FALLBACK_ANON_KEY = 'sb_publishable_7SvolQ8iEA4-8mX3A7LFtA_XzamAVYD';
-
 export function getSupabaseUrl(): string {
-  return process.env.EXPO_PUBLIC_SUPABASE_URL?.trim() || FALLBACK_URL;
+  const url = process.env.EXPO_PUBLIC_SUPABASE_URL?.trim();
+  if (!url) throw new Error(‘Missing EXPO_PUBLIC_SUPABASE_URL — add it to your .env file.’);
+  return url;
 }
 
 export function getSupabaseAnonKey(): string {
-  return process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY?.trim() || FALLBACK_ANON_KEY;
+  const key = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY?.trim();
+  if (!key) throw new Error(‘Missing EXPO_PUBLIC_SUPABASE_ANON_KEY — add it to your .env file.’);
+  return key;
 }

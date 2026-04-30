@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { View, StyleSheet, ScrollView, RefreshControl, Alert } from 'react-native';
+import { feedbackSuccess, feedbackWarning } from '../../utils/feedback';
 import { Text, FAB, Portal, Dialog, Button, TextInput, IconButton, Chip } from 'react-native-paper';
 import { useAuth } from '../../hooks/useAuth';
 import { useRouter, useFocusEffect, useLocalSearchParams } from 'expo-router';
@@ -191,6 +192,8 @@ export default function TasksScreen() {
   const handleStatusChange = async (taskId: string, status: TaskStatus) => {
     try {
       await offlineTaskService.updateTaskStatus(taskId, status);
+      if (status === 'completed') feedbackSuccess();
+      else if (status === 'failed') feedbackWarning();
       loadTasks();
     } catch (error) {
       console.error('Error updating task status:', error);
