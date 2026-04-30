@@ -1,14 +1,26 @@
-import React, { useState, useEffect, useCallback } from 'react';
-import { View, StyleSheet, ScrollView, TouchableOpacity, RefreshControl } from 'react-native';
-import { Text, Card, Button, useTheme, IconButton, Avatar, Portal, Modal } from 'react-native-paper';
+import React, { useState, useCallback, useMemo, useEffect } from 'react';
+import {
+  View,
+  StyleSheet,
+  ScrollView,
+  TouchableOpacity,
+  RefreshControl,
+  AppState,
+  Alert,
+} from 'react-native';
+import { Text, Card, Button, IconButton, Portal, Modal } from 'react-native-paper';
 import { useAuth } from '../../hooks/useAuth';
 import { offlineTaskService } from '../../services/offline/taskService';
 import { Task } from '../../types/task';
 import { useRouter, useFocusEffect } from 'expo-router';
 import BottomNavBar, { BOTTOM_NAV_TOTAL_HEIGHT } from '../../components/BottomNavBar';
-import TaskCardWithSubtasks from '../../components/tasks/TaskCardWithSubtasks';
+import Sidebar from '../../components/Sidebar';
+import QuestLogScreenHeader from '../../components/QuestLogScreenHeader';
 import { habitService } from '../../services/supabase/habitService';
 import { Habit } from '../../types/habit';
+import { FONT_SERIF, type ThemeColors } from '../../constants/lifeTrackerDesign';
+import { useAppTheme } from '../../contexts/AppThemeContext';
+import { isHabitDueOnDate } from '../../utils/habitSchedule';
 
 const ACTIVITY_OPTIONS = [
   { key: 'exercise', label: 'Exercise', emoji: '🏋️' },
@@ -30,7 +42,8 @@ const ACTIVITY_OPTIONS = [
 ];
 
 const CalendarScreen = () => {
-  const theme = useTheme();
+  const { colors: c } = useAppTheme();
+  const styles = useMemo(() => createCalendarStyles(c), [c]);
   const { user } = useAuth();
   const router = useRouter();
   const [tasks, setTasks] = useState<Task[]>([]);
@@ -40,16 +53,21 @@ const CalendarScreen = () => {
   const [selectedTask, setSelectedTask] = useState<Task | null>(null);
   const [showTaskModal, setShowTaskModal] = useState(false);
   const [showMonthPicker, setShowMonthPicker] = useState(false);
-  const [expandedTasks, setExpandedTasks] = useState<Set<string>>(new Set());
   const [habits, setHabits] = useState<Habit[]>([]);
+  const [sidebarVisible, setSidebarVisible] = useState(false);
 
   const getPriorityColor = (priority?: number) => {
     switch (priority) {
-      case 1: return '#4CAF50'; // Low - green
-      case 2: return '#FFC107'; // Medium - orange
-      case 3: return '#F44336'; // High - red
-      case 4: return '#9C27B0'; // Urgent - purple
-      default: return '#E0E0E0'; // Default/unspecified - grey
+      case 1:
+        return c.teal;
+      case 2:
+        return c.amber;
+      case 3:
+        return c.pink;
+      case 4:
+        return c.blue;
+      default:
+        return c.tx2;
     }
   };
 
@@ -80,12 +98,7 @@ const CalendarScreen = () => {
     if (!user) return;
     try {
       const allTasks = await offlineTaskService.getTasks(user.id);
-      console.log('Calendar: All tasks fetched:', allTasks);
-      
-      // Filter tasks that have a deadline/date set
-      const tasksWithDates = allTasks.filter(task => task.deadline);
-      console.log('Calendar: Tasks with dates:', tasksWithDates);
-      
+      const tasksWithDates = allTasks.filter((task) => task.deadline);
       setTasks(tasksWithDates);
     } catch (error) {
       console.error('Error loading tasks:', error);
@@ -109,11 +122,22 @@ const CalendarScreen = () => {
     }, [loadTasks, loadHabits])
   );
 
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (state) => {
+      if (state === 'active') {
+        loadTasks();
+        loadHabits();
+      }
+    });
+    return () => sub.remove();
+  }, [loadTasks, loadHabits]);
+
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
     await loadTasks();
+    await loadHabits();
     setRefreshing(false);
-  }, [loadTasks]);
+  }, [loadTasks, loadHabits]);
 
   // Navigation functions
   const goToPreviousMonth = () => {
@@ -140,24 +164,21 @@ const CalendarScreen = () => {
     setSelectedDate(new Date(year, month, 1));
   };
 
-  // Group tasks by date for calendar dots
-  const tasksByDate: Record<string, Task[]> = {};
-  tasks.forEach(task => {
-    if (task.deadline) {
+  const tasksByDate = useMemo(() => {
+    const by: Record<string, Task[]> = {};
+    for (const task of tasks) {
+      if (!task.deadline) continue;
       try {
         const date = parseDate(task.deadline);
-        
-        // Use local date formatting to avoid timezone issues
         const dateKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
-        if (!tasksByDate[dateKey]) tasksByDate[dateKey] = [];
-        tasksByDate[dateKey].push(task);
-        
-        console.log(`Calendar: Task "${task.title}" mapped to date ${dateKey}`);
+        if (!by[dateKey]) by[dateKey] = [];
+        by[dateKey].push(task);
       } catch (error) {
         console.error(`Calendar: Error parsing date for task "${task.title}":`, error);
       }
     }
-  });
+    return by;
+  }, [tasks]);
 
   // Filter tasks for selected date
   const selectedDateKey = `${selectedDate.getFullYear()}-${String(selectedDate.getMonth() + 1).padStart(2, '0')}-${String(selectedDate.getDate()).padStart(2, '0')}`;
@@ -203,35 +224,79 @@ const CalendarScreen = () => {
     }
   };
 
-  const toggleSubtasks = (taskId: string) => {
-    setExpandedTasks(prev => {
-      const newSet = new Set(prev);
-      if (newSet.has(taskId)) {
-        newSet.delete(taskId);
-      } else {
-        newSet.add(taskId);
+  const handleDeleteTask = (task: Task) => {
+    Alert.alert('Delete task', `Remove “${task.title}” from your list and calendar?`, [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Delete',
+        style: 'destructive',
+        onPress: async () => {
+          try {
+            await offlineTaskService.deleteTask(task.id);
+            setShowTaskModal(false);
+            setSelectedTask(null);
+            await loadTasks();
+          } catch (e) {
+            console.error('Calendar delete task:', e);
+          }
+        },
+      },
+    ]);
+  };
+
+  const tasksByDayKey = useMemo(() => {
+    const roots = tasks.filter((t) => !t.parent_task_id && t.deadline);
+    const byDay: Record<string, Task[]> = {};
+    for (const task of roots) {
+      try {
+        const date = parseDate(task.deadline!);
+        const key = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+        if (!byDay[key]) byDay[key] = [];
+        byDay[key].push(task);
+      } catch {
+        /* skip */
       }
-      return newSet;
+    }
+    return byDay;
+  }, [tasks]);
+
+  /** Days in the selected month only, bullet list aligned with the calendar month. */
+  const listViewSortedDayKeys = useMemo(() => {
+    const y = selectedDate.getFullYear();
+    const m = selectedDate.getMonth();
+    const keysSet = new Set<string>();
+
+    for (const key of Object.keys(tasksByDayKey)) {
+      const [yy, mm] = key.split('-').map(Number);
+      if (yy === y && mm - 1 === m) keysSet.add(key);
+    }
+
+    const lastD = new Date(y, m + 1, 0).getDate();
+    for (let day = 1; day <= lastD; day++) {
+      const key = `${y}-${String(m + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+      const d = new Date(y, m, day, 12, 0, 0, 0);
+      if (habits.some((h) => isHabitDueOnDate(h, d))) keysSet.add(key);
+    }
+
+    return [...keysSet]
+      .filter((key) => {
+        const [yy, mm, dd] = key.split('-').map(Number);
+        const d = new Date(yy, mm - 1, dd, 12, 0, 0, 0);
+        const hasTasks = (tasksByDayKey[key]?.length ?? 0) > 0;
+        const hasHabits = habits.some((h) => isHabitDueOnDate(h, d));
+        return hasTasks || hasHabits;
+      })
+      .sort();
+  }, [tasksByDayKey, habits, selectedDate]);
+
+  const formatListDayHeader = (dateKey: string) => {
+    const [yy, mm, dd] = dateKey.split('-').map(Number);
+    return new Date(yy, mm - 1, dd, 12, 0, 0, 0).toLocaleDateString(undefined, {
+      weekday: 'long',
+      month: 'long',
+      day: 'numeric',
+      year: 'numeric',
     });
-  };
-
-  const handleDeleteTask = async (taskId: string) => {
-    try {
-      // The offlineTaskService.deleteTask now handles subtask deletion automatically
-      await offlineTaskService.deleteTask(taskId);
-      loadTasks();
-    } catch (error) {
-      console.error('Error deleting task:', error);
-    }
-  };
-
-  const handleDeleteSubtask = async (subtaskId: string) => {
-    try {
-      await offlineTaskService.deleteTask(subtaskId);
-      loadTasks();
-    } catch (error) {
-      console.error('Error deleting subtask:', error);
-    }
   };
 
   // Calendar grid renderer
@@ -254,21 +319,27 @@ const CalendarScreen = () => {
       const key = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
       const dayTasks = tasksByDate[key] || [];
       const isToday = date.toDateString() === new Date().toDateString();
-      
+      const isSelected = key === selectedDateKey;
+
       days.push(
         <TouchableOpacity
           key={key}
           style={[
             styles.calendarDay,
-            key === selectedDateKey && styles.calendarDaySelected,
-            isToday && styles.calendarDayToday
+            isSelected && styles.calendarDaySelected,
+            isToday && !isSelected && styles.calendarDayToday,
           ]}
           onPress={() => setSelectedDate(date)}
         >
-          <Text style={[
-            styles.calendarDayText,
-            isToday && styles.calendarDayTextToday
-          ]}>{i}</Text>
+          <Text
+            style={[
+              styles.calendarDayText,
+              isSelected && styles.calendarDayTextSelected,
+              isToday && !isSelected && styles.calendarDayTextToday,
+            ]}
+          >
+            {i}
+          </Text>
           {dayTasks.length > 0 && (
             <View style={styles.calendarDotsRow}>
               {dayTasks.slice(0, 3).map((task, idx) => (
@@ -284,7 +355,9 @@ const CalendarScreen = () => {
                 />
               ))}
               {dayTasks.length > 3 && (
-                <Text style={styles.calendarMoreTasks}>+{dayTasks.length - 3}</Text>
+                <Text style={styles.calendarMoreTasks} numberOfLines={1}>
+                  +{dayTasks.length - 3}
+                </Text>
               )}
             </View>
           )}
@@ -295,29 +368,57 @@ const CalendarScreen = () => {
   };
 
   return (
-    <View style={{ flex: 1, backgroundColor: '#F7F8FA' }}>
-      <View style={styles.headerRow}>
-        <Text style={styles.headerTitle}>Calendar</Text>
-        <View style={styles.headerActions}>
-          <IconButton icon="home" onPress={() => router.push('/(app)/dashboard')} />
-          <IconButton icon={view === 'calendar' ? 'format-list-bulleted' : 'calendar-month'} onPress={() => setView(view === 'calendar' ? 'tasks' : 'calendar')} />
-        </View>
-      </View>
+    <View style={{ flex: 1, backgroundColor: c.bg }}>
+      <QuestLogScreenHeader
+        title="Calendar"
+        sidebarVisible={sidebarVisible}
+        onOpenSidebar={() => setSidebarVisible(true)}
+        right={
+          <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+            <IconButton
+              icon="home"
+              iconColor={c.amber}
+              onPress={() => router.push('/(app)/dashboard')}
+            />
+            <IconButton
+              icon={view === 'calendar' ? 'format-list-bulleted' : 'calendar-month'}
+              iconColor={c.amber}
+              onPress={() => setView(view === 'calendar' ? 'tasks' : 'calendar')}
+            />
+          </View>
+        }
+      />
       
       {view === 'calendar' ? (
         <>
           <View style={styles.monthRow}>
-            <IconButton icon="chevron-left" onPress={goToPreviousMonth} style={styles.navButton} />
+            <IconButton
+              icon="chevron-left"
+              iconColor={c.tx}
+              onPress={goToPreviousMonth}
+              style={styles.navButton}
+            />
             <TouchableOpacity style={styles.monthSelector} onPress={() => setShowMonthPicker(true)}>
               <Text style={styles.monthText}>
                 {selectedDate.toLocaleString('default', { month: 'long', year: 'numeric' })}
               </Text>
             </TouchableOpacity>
-            <IconButton icon="chevron-right" onPress={goToNextMonth} style={styles.navButton} />
+            <IconButton
+              icon="chevron-right"
+              iconColor={c.tx}
+              onPress={goToNextMonth}
+              style={styles.navButton}
+            />
           </View>
-          
+
           <View style={styles.calendarControls}>
-            <Button mode="outlined" onPress={goToToday} style={styles.todayButton}>
+            <Button
+              mode="outlined"
+              onPress={goToToday}
+              style={[styles.todayButton, { borderColor: c.amber }]}
+              textColor={c.amber}
+              labelStyle={{ fontFamily: FONT_SERIF }}
+            >
               Today
             </Button>
           </View>
@@ -330,16 +431,28 @@ const CalendarScreen = () => {
             </Text>
           </View>
           
-          <ScrollView style={styles.eventsList} 
+          <ScrollView
+            style={styles.eventsList}
             contentContainerStyle={{ paddingBottom: BOTTOM_NAV_TOTAL_HEIGHT + 20 }}
-            refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}>
+            refreshControl={
+              <RefreshControl
+                refreshing={refreshing}
+                onRefresh={onRefresh}
+                tintColor={c.amber}
+                colors={[c.amber]}
+              />
+            }
+          >
             {dayTasks.length === 0 && selectedHabits.length === 0 ? (
               <Text style={styles.noEvents}>No events or habits for this day.</Text>
             ) : (
               <>
                 {dayTasks.map((task) => (
                   <TouchableOpacity key={task.id} onPress={() => handleTaskPress(task)} activeOpacity={0.7}>
-                    <Card style={[styles.eventCard, { borderLeftColor: getPriorityColor(task.priority) }]}> 
+                    <Card
+                      elevation={0}
+                      style={[styles.eventCard, { borderLeftColor: getPriorityColor(task.priority) }]}
+                    >
                       <Card.Content style={{ flexDirection: 'row', alignItems: 'center' }}>
                         <View style={[styles.eventPriorityDot, { backgroundColor: getPriorityColor(task.priority) }]} />
                         <View style={{ flex: 1 }}>
@@ -356,16 +469,13 @@ const CalendarScreen = () => {
                   </TouchableOpacity>
                 ))}
                 {selectedHabits.length > 0 && (
-                  <View style={{ marginTop: 16 }}>
-                    <Text style={{ fontWeight: 'bold', fontSize: 18, marginBottom: 8 }}>Habits for this day</Text>
-                    {selectedHabits.length === 0 && <Text style={{ color: '#888' }}>No habits for this day.</Text>}
-                    {selectedHabits.map(habit => (
-                      <Card key={habit.id} style={{ marginBottom: 8, padding: 12, borderRadius: 12 }}>
-                        <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                          <Text style={{ fontSize: 24, marginRight: 8 }}>{habit.icon || '🏆'}</Text>
-                          <Text style={{ fontWeight: 'bold', fontSize: 16 }}>{habit.title}</Text>
-                          <Text style={{ marginLeft: 8, color: '#888' }}>Target: {habit.target}</Text>
-                        </View>
+                  <View style={styles.habitsBlock}>
+                    <Text style={styles.habitsBlockTitle}>Habits for this day</Text>
+                    {selectedHabits.map((habit) => (
+                      <Card key={habit.id} elevation={0} style={styles.habitCard}>
+                        <Card.Content style={styles.habitCardContent}>
+                          <Text style={styles.habitTitle}>{habit.title}</Text>
+                        </Card.Content>
                       </Card>
                     ))}
                   </View>
@@ -375,32 +485,76 @@ const CalendarScreen = () => {
           </ScrollView>
         </>
       ) : (
-        <ScrollView style={styles.eventsList} 
+        <ScrollView
+          style={styles.eventsList}
           contentContainerStyle={{ paddingBottom: BOTTOM_NAV_TOTAL_HEIGHT + 20 }}
-          refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}>
-          {tasks.map(task => {
-            if (task.parent_task_id) return null;
-            
-            return (
-              <TaskCardWithSubtasks
-                key={task.id}
-                task={task}
-                allTasks={tasks}
-                variant="calendar"
-                onStatusChange={(taskId, status) => {
-                  const taskToUpdate = tasks.find(t => t.id === taskId);
-                  if (taskToUpdate) {
-                    handleTaskStatus(taskToUpdate, status as 'completed' | 'failed');
-                  }
-                }}
-                onPress={handleTaskPress}
-                expanded={expandedTasks.has(task.id)}
-                onToggleExpand={toggleSubtasks}
-                onDelete={handleDeleteTask}
-                onDeleteSubtask={handleDeleteSubtask}
-              />
-            );
-          })}
+          refreshControl={
+            <RefreshControl
+              refreshing={refreshing}
+              onRefresh={onRefresh}
+              tintColor={c.amber}
+              colors={[c.amber]}
+            />
+          }
+        >
+          <Text style={styles.listViewHint}>
+            Schedule by day (month: {selectedDate.toLocaleString('default', { month: 'long', year: 'numeric' })}) — tap a
+            task for details.
+          </Text>
+          {listViewSortedDayKeys.length === 0 ? (
+            <Text style={styles.noEvents}>No tasks or habits in this range.</Text>
+          ) : (
+            listViewSortedDayKeys.map((dateKey) => {
+              const dayTasks = tasksByDayKey[dateKey] ?? [];
+              const [yy, mm, dd] = dateKey.split('-').map(Number);
+              const d = new Date(yy, mm - 1, dd, 12, 0, 0, 0);
+              const dayHabits = habits.filter((h) => isHabitDueOnDate(h, d));
+              return (
+                <View key={dateKey} style={styles.dayBulletSection}>
+                  <Text style={styles.dayBulletSectionTitle}>{formatListDayHeader(dateKey)}</Text>
+                  {dayTasks.map((task) => {
+                    const subs = tasks.filter((t) => t.parent_task_id === task.id);
+                    return (
+                      <View key={task.id}>
+                        <TouchableOpacity
+                          style={styles.bulletRow}
+                          onPress={() => handleTaskPress(task)}
+                          activeOpacity={0.7}
+                        >
+                          <Text style={styles.bulletChar}>•</Text>
+                          <View style={styles.bulletTextCol}>
+                            <Text style={styles.bulletTitle}>{task.title}</Text>
+                            {task.startTime && task.endTime ? (
+                              <Text style={styles.bulletMeta}>
+                                {formatTime(task.startTime)} – {formatTime(task.endTime)}
+                              </Text>
+                            ) : null}
+                          </View>
+                        </TouchableOpacity>
+                        {subs.map((st) => (
+                          <View key={st.id} style={styles.bulletRowNested}>
+                            <Text style={styles.bulletCharNested}>◦</Text>
+                            <Text style={styles.bulletTitleNested}>{st.title}</Text>
+                          </View>
+                        ))}
+                      </View>
+                    );
+                  })}
+                  {dayHabits.map((habit) => (
+                    <View key={habit.id} style={styles.bulletRow}>
+                      <Text style={styles.bulletChar}>•</Text>
+                      <View style={styles.bulletTextCol}>
+                        <Text style={styles.bulletTitle}>
+                          {habit.title}
+                          <Text style={styles.bulletHabitTag}> · Habit</Text>
+                        </Text>
+                      </View>
+                    </View>
+                  ))}
+                </View>
+              );
+            })
+          )}
         </ScrollView>
       )}
       
@@ -409,12 +563,15 @@ const CalendarScreen = () => {
         <Modal visible={showTaskModal} onDismiss={() => setShowTaskModal(false)} contentContainerStyle={styles.modalContainer}>
           {selectedTask && (
             <Card style={styles.detailCard}>
-              <Card.Title title={selectedTask.title} />
+              <Card.Title
+                title={selectedTask.title}
+                titleStyle={{ fontFamily: FONT_SERIF, color: c.tx }}
+              />
               <Card.Content>
-                <Text style={{ marginBottom: 8 }}>{selectedTask.description}</Text>
-                <Text>Status: {selectedTask.status}</Text>
+                <Text style={styles.modalBody}>{selectedTask.description}</Text>
+                <Text style={styles.modalBody}>Status: {selectedTask.status}</Text>
                 {selectedTask.deadline && (
-                  <Text style={{ marginTop: 4 }}>Date: {(() => {
+                  <Text style={styles.modalBody}>Date: {(() => {
                     try {
                       const date = parseDate(selectedTask.deadline);
                       return date.toLocaleDateString();
@@ -425,7 +582,9 @@ const CalendarScreen = () => {
                   })()}</Text>
                 )}
                 {selectedTask.startTime && selectedTask.endTime && (
-                  <Text style={{ marginTop: 4 }}>Time: {formatTime(selectedTask.startTime)} - {formatTime(selectedTask.endTime)}</Text>
+                  <Text style={styles.modalBody}>
+                    Time: {formatTime(selectedTask.startTime)} - {formatTime(selectedTask.endTime)}
+                  </Text>
                 )}
                 {selectedTask.activities && selectedTask.activities.length > 0 && (
                   <View style={styles.modalActivitiesContainer}>
@@ -445,9 +604,34 @@ const CalendarScreen = () => {
                 )}
               </Card.Content>
               <Card.Actions>
-                <Button mode="contained" onPress={() => handleTaskStatus(selectedTask, 'completed')} style={{ backgroundColor: '#4caf50', marginRight: 8 }}>Completed</Button>
-                <Button mode="contained" onPress={() => handleTaskStatus(selectedTask, 'failed')} style={{ backgroundColor: '#ff5252' }}>Failed</Button>
-                <Button onPress={() => setShowTaskModal(false)}>Close</Button>
+                <Button
+                  mode="contained"
+                  onPress={() => handleTaskStatus(selectedTask, 'completed')}
+                  buttonColor={c.teal}
+                  textColor={c.onAccent}
+                  style={{ marginRight: 8 }}
+                >
+                  Completed
+                </Button>
+                <Button
+                  mode="contained"
+                  onPress={() => handleTaskStatus(selectedTask, 'failed')}
+                  buttonColor="#cf6679"
+                  textColor="#ffffff"
+                >
+                  Failed
+                </Button>
+                <Button
+                  mode="outlined"
+                  textColor="#cf6679"
+                  onPress={() => handleDeleteTask(selectedTask)}
+                  style={{ marginRight: 8 }}
+                >
+                  Delete
+                </Button>
+                <Button textColor={c.tx2} onPress={() => setShowTaskModal(false)}>
+                  Close
+                </Button>
               </Card.Actions>
             </Card>
           )}
@@ -455,33 +639,19 @@ const CalendarScreen = () => {
       </Portal>
       
       <BottomNavBar />
+      <Sidebar isVisible={sidebarVisible} onClose={() => setSidebarVisible(false)} />
     </View>
   );
 };
 
-const styles = StyleSheet.create({
-  headerRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 20,
-    paddingTop: 32,
-    paddingBottom: 8,
-  },
-  headerTitle: {
-    fontSize: 24,
-    fontWeight: 'bold',
-    color: '#222',
-  },
-  headerActions: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
+function createCalendarStyles(c: ThemeColors) {
+  return StyleSheet.create({
   monthRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    padding: 12,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
   },
   navButton: {
     padding: 4,
@@ -490,18 +660,20 @@ const styles = StyleSheet.create({
     padding: 8,
   },
   monthText: {
+    fontFamily: FONT_SERIF,
     fontSize: 18,
     fontWeight: '600',
-    color: '#222',
+    color: c.tx,
   },
   calendarControls: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
-    padding: 12,
+    justifyContent: 'flex-start',
+    paddingHorizontal: 12,
+    paddingBottom: 8,
   },
   todayButton: {
-    padding: 8,
+    paddingVertical: 4,
   },
   calendarGrid: {
     flexDirection: 'row',
@@ -517,63 +689,73 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     margin: 2,
     borderRadius: 10,
-    backgroundColor: '#fff',
+    backgroundColor: c.surf,
+    borderWidth: 1,
+    borderColor: c.borderDefault,
   },
   calendarDaySelected: {
-    backgroundColor: '#EDE7FE',
+    backgroundColor: c.amber,
     borderWidth: 2,
-    borderColor: '#7B61FF',
+    borderColor: c.amber,
   },
   calendarDayToday: {
-    backgroundColor: '#EDE7FE',
+    backgroundColor: c.amberBg,
     borderWidth: 2,
-    borderColor: '#7B61FF',
+    borderColor: c.amberBorder,
   },
   calendarDayText: {
-    fontSize: 16,
+    fontFamily: FONT_SERIF,
+    fontSize: 15,
     fontWeight: '600',
-    color: '#222',
+    color: c.tx,
+  },
+  calendarDayTextSelected: {
+    color: c.chipSelectedFg,
   },
   calendarDayTextToday: {
-    fontWeight: 'bold',
+    color: c.amber,
+    fontWeight: '700',
   },
   calendarDotsRow: {
     flexDirection: 'row',
     marginTop: 2,
+    alignItems: 'center',
   },
   calendarMoreTasks: {
-    fontSize: 12,
-    fontWeight: 'bold',
-    color: '#888',
-    marginLeft: 4,
+    fontSize: 10,
+    fontWeight: '700',
+    color: c.tx2,
+    marginLeft: 2,
   },
   selectedDateBar: {
-    backgroundColor: '#22223B',
+    backgroundColor: c.bg2,
     padding: 12,
-    borderTopLeftRadius: 18,
-    borderTopRightRadius: 18,
+    borderTopLeftRadius: 12,
+    borderTopRightRadius: 12,
     marginTop: 8,
+    marginHorizontal: 12,
+    borderWidth: 1,
+    borderColor: c.borderDefault,
   },
   selectedDateText: {
-    color: '#fff',
-    fontSize: 16,
-    fontWeight: 'bold',
+    fontFamily: FONT_SERIF,
+    color: c.tx,
+    fontSize: 15,
+    fontWeight: '600',
   },
   eventsList: {
     flex: 1,
     paddingHorizontal: 16,
     marginTop: 8,
+    backgroundColor: c.bg,
   },
   eventCard: {
     marginBottom: 12,
-    borderRadius: 14,
-    backgroundColor: '#fff',
-    borderLeftWidth: 5,
-    elevation: 2,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.08,
-    shadowRadius: 8,
+    borderRadius: 12,
+    backgroundColor: c.surf,
+    borderLeftWidth: 4,
+    borderWidth: 1,
+    borderColor: c.borderDefault,
   },
   eventPriorityDot: {
     width: 12,
@@ -582,64 +764,178 @@ const styles = StyleSheet.create({
     marginRight: 10,
   },
   eventTitle: {
+    fontFamily: FONT_SERIF,
     fontSize: 16,
-    fontWeight: 'bold',
-    color: '#222',
+    fontWeight: '600',
+    color: c.tx,
   },
   eventTime: {
     fontSize: 13,
-    color: '#888',
+    color: c.tx2,
     marginTop: 2,
+    fontFamily: FONT_SERIF,
   },
   eventDescription: {
     fontSize: 12,
-    color: '#888',
+    color: c.tx2,
     marginTop: 2,
+    fontFamily: FONT_SERIF,
   },
   noEvents: {
-    color: '#888',
-    fontSize: 16,
+    color: c.tx2,
+    fontSize: 15,
     textAlign: 'center',
     marginTop: 24,
+    fontFamily: FONT_SERIF,
+  },
+  listViewHint: {
+    fontFamily: FONT_SERIF,
+    fontSize: 13,
+    color: c.tx2,
+    marginBottom: 16,
+    lineHeight: 20,
+  },
+  dayBulletSection: {
+    marginBottom: 20,
+  },
+  dayBulletSectionTitle: {
+    fontFamily: FONT_SERIF,
+    fontSize: 16,
+    fontWeight: '700',
+    color: c.amber,
+    marginBottom: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: c.borderDefault,
+    paddingBottom: 6,
+  },
+  bulletRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    marginBottom: 8,
+    paddingRight: 8,
+  },
+  bulletChar: {
+    fontSize: 18,
+    color: c.tx,
+    marginRight: 8,
+    lineHeight: 22,
+    width: 14,
+  },
+  bulletTextCol: {
+    flex: 1,
+    minWidth: 0,
+  },
+  bulletTitle: {
+    fontFamily: FONT_SERIF,
+    fontSize: 15,
+    color: c.tx,
+    fontWeight: '600',
+  },
+  bulletMeta: {
+    fontFamily: FONT_SERIF,
+    fontSize: 12,
+    color: c.tx2,
+    marginTop: 2,
+  },
+  bulletRowNested: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    marginBottom: 6,
+    marginLeft: 22,
+  },
+  bulletCharNested: {
+    fontSize: 16,
+    color: c.tx2,
+    marginRight: 6,
+    lineHeight: 20,
+  },
+  bulletTitleNested: {
+    fontFamily: FONT_SERIF,
+    fontSize: 14,
+    color: c.tx2,
+    flex: 1,
+  },
+  bulletHabitTag: {
+    fontFamily: FONT_SERIF,
+    fontSize: 13,
+    fontWeight: '400',
+    color: c.tx2,
+  },
+  habitsBlock: {
+    marginTop: 16,
+  },
+  habitsBlockTitle: {
+    fontFamily: FONT_SERIF,
+    fontWeight: '600',
+    fontSize: 17,
+    marginBottom: 8,
+    color: c.tx,
+  },
+  habitCard: {
+    marginBottom: 8,
+    borderRadius: 12,
+    backgroundColor: c.surf,
+    borderWidth: 1,
+    borderColor: c.borderDefault,
+  },
+  habitCardContent: {
+    paddingVertical: 4,
+  },
+  habitTitle: {
+    fontFamily: FONT_SERIF,
+    fontWeight: '600',
+    fontSize: 15,
+    color: c.tx,
   },
   modalContainer: {
-    backgroundColor: '#fff',
-    padding: 20,
-    borderTopLeftRadius: 20,
-    borderTopRightRadius: 20,
+    backgroundColor: c.surfaceElevated,
+    margin: 20,
+    borderRadius: 16,
+    padding: 0,
     maxHeight: '80%',
   },
   detailCard: {
-    backgroundColor: '#fff',
-    padding: 20,
-    borderRadius: 10,
+    backgroundColor: c.surfaceElevated,
+    borderRadius: 16,
+  },
+  modalBody: {
+    color: c.tx,
+    marginBottom: 8,
+    fontFamily: FONT_SERIF,
   },
   modalActivitiesContainer: {
-    marginTop: 20,
+    marginTop: 12,
   },
   modalActivitiesTitle: {
-    fontSize: 18,
-    fontWeight: 'bold',
-    color: '#222',
-    marginBottom: 10,
+    fontSize: 15,
+    fontWeight: '600',
+    color: c.tx,
+    marginBottom: 8,
+    fontFamily: FONT_SERIF,
   },
   modalActivitiesList: {
     flexDirection: 'row',
     flexWrap: 'wrap',
+    gap: 8,
   },
   modalActivityItem: {
-    width: '33.33%',
+    flexDirection: 'row',
     alignItems: 'center',
-    marginBottom: 10,
+    backgroundColor: c.surface,
+    borderRadius: 12,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
   },
   modalActivityEmoji: {
-    fontSize: 24,
-    marginBottom: 4,
+    fontSize: 16,
+    marginRight: 4,
   },
   modalActivityLabel: {
     fontSize: 12,
-    color: '#888',
+    color: c.tx2,
+    fontFamily: FONT_SERIF,
   },
 });
+}
 
 export default CalendarScreen; 

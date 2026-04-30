@@ -8,6 +8,10 @@ export interface Task {
   description?: string;
   status: TaskStatus;
   priority: TaskPriority;
+  /** Quest XP reward for completing this task (replaces priority in UI). */
+  xp_reward?: number;
+  /** Optional task folder (see foldersStorage). */
+  folder_id?: string | null;
   deadline?: string; // ISO string format
   startTime?: string; // ISO string format - matches database column
   endTime?: string; // ISO string format - matches database column
@@ -27,6 +31,8 @@ export interface TaskCreate {
   title: string;
   description?: string;
   priority?: TaskPriority;
+  xp_reward?: number;
+  folder_id?: string | null;
   deadline?: string;
   startTime?: string; // matches database column
   endTime?: string; // matches database column
@@ -39,6 +45,8 @@ export interface TaskUpdate {
   description?: string;
   status?: TaskStatus;
   priority?: TaskPriority;
+  xp_reward?: number;
+  folder_id?: string | null;
   deadline?: string;
   startTime?: string; // matches database column
   endTime?: string; // matches database column

@@ -1,5 +1,5 @@
 import { supabase } from './supabase';
-import { Habit, HabitHistoryEntry } from '../../types/habit';
+import { Habit } from '../../types/habit';
 
 export const habitService = {
   async getHabits(userId: string): Promise<Habit[]> {
@@ -11,11 +11,14 @@ export const habitService = {
     if (error) throw error;
     return data || [];
   },
-  async addHabit(habit: Omit<Habit, 'id'> & { user_id: string }): Promise<void> {
-    const { error } = await supabase
+  async addHabit(habit: Omit<Habit, 'id'> & { user_id: string }): Promise<Habit> {
+    const { data, error } = await supabase
       .from('habits')
-      .insert([{ ...habit }]);
+      .insert([{ ...habit }])
+      .select()
+      .single();
     if (error) throw error;
+    return data as Habit;
   },
   async updateHabit(habitId: string, updates: Partial<Habit>): Promise<void> {
     const { error } = await supabase
@@ -38,13 +41,15 @@ export const habitService = {
       .upsert({ habit_id: habitId, date, value });
     if (error) throw error;
   },
-  async getHabitHistoryByHabitIds(habitIds: string[]): Promise<Pick<HabitHistoryEntry, 'date' | 'value'> & { habit_id: string }[]> {
-    if (!habitIds || habitIds.length === 0) return [] as any;
+  async getHabitHistoryByHabitIds(
+    habitIds: string[],
+  ): Promise<{ habit_id: string; date: string; value?: number }[]> {
+    if (!habitIds || habitIds.length === 0) return [];
     const { data, error } = await supabase
       .from('habit_history')
       .select('habit_id,date,value')
       .in('habit_id', habitIds);
     if (error) throw error;
-    return (data as any) || [];
+    return (data as { habit_id: string; date: string; value?: number }[]) || [];
   },
 }; 

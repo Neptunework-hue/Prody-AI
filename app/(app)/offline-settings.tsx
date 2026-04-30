@@ -1,21 +1,152 @@
-import React, { useState, useEffect } from 'react';
-import { View, StyleSheet, ScrollView, Alert } from 'react-native';
-import { Text, Card, Button, useTheme, IconButton, Switch, Divider } from 'react-native-paper';
-import { useAuth } from '../../hooks/useAuth';
+import React, { useState, useMemo } from 'react';
+import { View, StyleSheet, ScrollView, Alert, Text } from 'react-native';
+import { Button } from 'react-native-paper';
 import { useOffline } from '../../hooks/useOffline';
-import { offlineService } from '../../services/offline/offlineService';
-import { useRouter } from 'expo-router';
 import OfflineIndicator from '../../components/OfflineIndicator';
-import HamburgerMenu from '../../components/HamburgerMenu';
 import Sidebar from '../../components/Sidebar';
+import QuestLogScreenHeader from '../../components/QuestLogScreenHeader';
+import { FONT_SERIF, type ThemeColors } from '../../constants/lifeTrackerDesign';
+import { useAppTheme } from '../../contexts/AppThemeContext';
+
+function createOfflineSettingsStyles(c: ThemeColors) {
+  return StyleSheet.create({
+    root: {
+      flex: 1,
+      backgroundColor: c.bg,
+    },
+    scroll: {
+      flex: 1,
+    },
+    scrollContent: {
+      padding: 16,
+      paddingBottom: 40,
+    },
+    panel: {
+      backgroundColor: c.surf,
+      borderRadius: 12,
+      borderWidth: 1,
+      borderColor: c.borderDefault,
+      padding: 16,
+      marginBottom: 14,
+    },
+    sectionTitle: {
+      fontFamily: FONT_SERIF,
+      fontSize: 17,
+      fontWeight: '600',
+      color: c.tx,
+      marginBottom: 10,
+    },
+    rowTitle: {
+      fontFamily: FONT_SERIF,
+      fontSize: 17,
+      fontWeight: '600',
+      color: c.tx,
+    },
+    statusRow: {
+      flexDirection: 'row',
+      justifyContent: 'space-between',
+      alignItems: 'center',
+      marginBottom: 8,
+    },
+    statusPill: {
+      paddingHorizontal: 12,
+      paddingVertical: 5,
+      borderRadius: 10,
+      borderWidth: 1,
+    },
+    statusPillOnline: {
+      backgroundColor: c.tealBg,
+      borderColor: c.tealBorder,
+    },
+    statusPillOffline: {
+      backgroundColor: c.pinkBg,
+      borderColor: c.pinkBorder,
+    },
+    statusPillText: {
+      fontFamily: FONT_SERIF,
+      fontSize: 12,
+      fontWeight: '700',
+    },
+    statusTextOnline: {
+      color: c.teal,
+    },
+    statusTextOffline: {
+      color: c.pink,
+    },
+    body: {
+      fontFamily: FONT_SERIF,
+      fontSize: 14,
+      lineHeight: 21,
+      color: c.tx2,
+    },
+    kvRow: {
+      flexDirection: 'row',
+      justifyContent: 'space-between',
+      alignItems: 'center',
+      marginBottom: 8,
+    },
+    label: {
+      fontFamily: FONT_SERIF,
+      fontSize: 14,
+      color: c.tx2,
+    },
+    value: {
+      fontFamily: FONT_SERIF,
+      fontSize: 14,
+      fontWeight: '600',
+      color: c.tx,
+    },
+    primaryBtn: {
+      marginTop: 8,
+      borderRadius: 10,
+    },
+    featureRow: {
+      flexDirection: 'row',
+      justifyContent: 'space-between',
+      alignItems: 'center',
+      paddingVertical: 8,
+    },
+    featureLabel: {
+      fontFamily: FONT_SERIF,
+      fontSize: 14,
+      color: c.tx,
+    },
+    featureOk: {
+      fontFamily: FONT_SERIF,
+      fontSize: 13,
+      fontWeight: '600',
+      color: c.teal,
+    },
+    featureWarn: {
+      fontFamily: FONT_SERIF,
+      fontSize: 13,
+      fontWeight: '600',
+      color: c.amber,
+    },
+    dangerBtn: {
+      marginTop: 12,
+      borderColor: 'rgba(229,115,115,0.45)',
+      borderRadius: 10,
+    },
+    dangerBtnLabel: {
+      fontFamily: FONT_SERIF,
+    },
+    tipLine: {
+      fontFamily: FONT_SERIF,
+      fontSize: 14,
+      lineHeight: 22,
+      color: c.tx2,
+      marginBottom: 8,
+    },
+  });
+}
 
 export default function OfflineSettingsScreen() {
-  const theme = useTheme();
-  const router = useRouter();
-  const { user } = useAuth();
   const { isOnline, pendingOperationsCount, lastSync, syncData, clearOfflineData } = useOffline();
   const [syncing, setSyncing] = useState(false);
   const [sidebarVisible, setSidebarVisible] = useState(false);
+  const { colors: c } = useAppTheme();
+  const styles = useMemo(() => createOfflineSettingsStyles(c), [c]);
 
   const handleSync = async () => {
     if (!isOnline) {
@@ -27,7 +158,7 @@ export default function OfflineSettingsScreen() {
     try {
       await syncData();
       Alert.alert('Success', 'Data synchronized successfully!');
-    } catch (error) {
+    } catch {
       Alert.alert('Sync Failed', 'Failed to sync data. Please try again.');
     } finally {
       setSyncing(false);
@@ -47,12 +178,12 @@ export default function OfflineSettingsScreen() {
             try {
               await clearOfflineData();
               Alert.alert('Success', 'Offline data cleared successfully!');
-            } catch (error) {
+            } catch {
               Alert.alert('Error', 'Failed to clear offline data.');
             }
-          }
-        }
-      ]
+          },
+        },
+      ],
     );
   };
 
@@ -62,237 +193,112 @@ export default function OfflineSettingsScreen() {
   };
 
   return (
-    <View style={{ flex: 1 }}>
-      {/* Header */}
-      <View style={styles.headerRow}>
-        <View style={styles.headerLeft}>
-          <HamburgerMenu onPress={() => setSidebarVisible(true)} isOpen={sidebarVisible} />
-          <View style={styles.headerText}>
-            <Text style={styles.headerTitle}>Offline Settings</Text>
-          </View>
-        </View>
-      </View>
+    <View style={styles.root}>
+      <QuestLogScreenHeader
+        title="Settings"
+        sidebarVisible={sidebarVisible}
+        onOpenSidebar={() => setSidebarVisible(true)}
+      />
 
-      <ScrollView 
-        style={styles.container}
-        contentContainerStyle={{ paddingBottom: 20 }}
+      <ScrollView
+        style={styles.scroll}
+        contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
       >
-        {/* Connection Status */}
-        <Card style={styles.card}>
-          <Card.Content>
-            <View style={styles.statusRow}>
-              <Text style={styles.cardTitle}>Connection Status</Text>
-              <View style={[styles.statusIndicator, { backgroundColor: isOnline ? '#4CAF50' : '#F44336' }]}>
-                <Text style={styles.statusText}>{isOnline ? 'Online' : 'Offline'}</Text>
-              </View>
-            </View>
-            <Text style={styles.statusDescription}>
-              {isOnline 
-                ? 'Your device is connected to the internet. All changes will be synced automatically.'
-                : 'Your device is offline. Changes will be saved locally and synced when you reconnect.'
-              }
-            </Text>
-          </Card.Content>
-        </Card>
-
-        {/* Sync Status */}
-        <Card style={styles.card}>
-          <Card.Content>
-            <Text style={styles.cardTitle}>Sync Status</Text>
-            <View style={styles.syncInfo}>
-              <Text style={styles.syncLabel}>Last Sync:</Text>
-              <Text style={styles.syncValue}>{formatLastSync()}</Text>
-            </View>
-            <View style={styles.syncInfo}>
-              <Text style={styles.syncLabel}>Pending Changes:</Text>
-              <Text style={styles.syncValue}>{pendingOperationsCount}</Text>
-            </View>
-            <Button
-              mode="contained"
-              onPress={handleSync}
-              loading={syncing}
-              disabled={!isOnline || syncing}
-              style={styles.syncButton}
+        <View style={styles.panel}>
+          <View style={styles.statusRow}>
+            <Text style={styles.rowTitle}>Connection</Text>
+            <View
+              style={[
+                styles.statusPill,
+                isOnline ? styles.statusPillOnline : styles.statusPillOffline,
+              ]}
             >
-              {syncing ? 'Syncing...' : 'Sync Now'}
-            </Button>
-          </Card.Content>
-        </Card>
+              <Text style={[styles.statusPillText, isOnline ? styles.statusTextOnline : styles.statusTextOffline]}>
+                {isOnline ? 'Online' : 'Offline'}
+              </Text>
+            </View>
+          </View>
+          <Text style={styles.body}>
+            {isOnline
+              ? 'Your device is connected. Changes sync when possible.'
+              : 'You are offline. Changes are saved locally and will sync when you reconnect.'}
+          </Text>
+        </View>
 
-        {/* Offline Features */}
-        <Card style={styles.card}>
-          <Card.Content>
-            <Text style={styles.cardTitle}>Offline Features</Text>
-            <View style={styles.featureRow}>
-              <Text style={styles.featureText}>Create Tasks</Text>
-              <Text style={styles.featureStatus}>✓ Available</Text>
-            </View>
-            <View style={styles.featureRow}>
-              <Text style={styles.featureText}>Edit Tasks</Text>
-              <Text style={styles.featureStatus}>✓ Available</Text>
-            </View>
-            <View style={styles.featureRow}>
-              <Text style={styles.featureText}>Delete Tasks</Text>
-              <Text style={styles.featureStatus}>✓ Available</Text>
-            </View>
-            <View style={styles.featureRow}>
-              <Text style={styles.featureText}>Focus Sessions</Text>
-              <Text style={styles.featureStatus}>✓ Available</Text>
-            </View>
-            <View style={styles.featureRow}>
-              <Text style={styles.featureText}>AI Chat</Text>
-              <Text style={styles.featureStatus}>⚠ Limited</Text>
-            </View>
-          </Card.Content>
-        </Card>
+        <View style={styles.panel}>
+          <Text style={styles.sectionTitle}>Sync</Text>
+          <View style={styles.kvRow}>
+            <Text style={styles.label}>Last sync</Text>
+            <Text style={styles.value}>{formatLastSync()}</Text>
+          </View>
+          <View style={styles.kvRow}>
+            <Text style={styles.label}>Pending changes</Text>
+            <Text style={styles.value}>{pendingOperationsCount}</Text>
+          </View>
+          <Button
+            mode="contained"
+            onPress={handleSync}
+            loading={syncing}
+            disabled={!isOnline || syncing}
+            style={styles.primaryBtn}
+            buttonColor={c.amber}
+            textColor={c.onAccent}
+          >
+            {syncing ? 'Syncing…' : 'Sync now'}
+          </Button>
+        </View>
 
-        {/* Data Management */}
-        <Card style={styles.card}>
-          <Card.Content>
-            <Text style={styles.cardTitle}>Data Management</Text>
-            <Text style={styles.dataDescription}>
-              Manage your locally stored data and sync settings.
-            </Text>
-            <Button
-              mode="outlined"
-              onPress={handleClearData}
-              style={styles.clearButton}
-              textColor="#F44336"
-            >
-              Clear Offline Data
-            </Button>
-          </Card.Content>
-        </Card>
+        <View style={styles.panel}>
+          <Text style={styles.sectionTitle}>Offline support</Text>
+          <View style={styles.featureRow}>
+            <Text style={styles.featureLabel}>Create tasks</Text>
+            <Text style={styles.featureOk}>Available</Text>
+          </View>
+          <View style={styles.featureRow}>
+            <Text style={styles.featureLabel}>Edit tasks</Text>
+            <Text style={styles.featureOk}>Available</Text>
+          </View>
+          <View style={styles.featureRow}>
+            <Text style={styles.featureLabel}>Delete tasks</Text>
+            <Text style={styles.featureOk}>Available</Text>
+          </View>
+          <View style={styles.featureRow}>
+            <Text style={styles.featureLabel}>Focus sessions</Text>
+            <Text style={styles.featureOk}>Available</Text>
+          </View>
+          <View style={styles.featureRow}>
+            <Text style={styles.featureLabel}>AI chat</Text>
+            <Text style={styles.featureWarn}>Limited</Text>
+          </View>
+        </View>
 
-        {/* Tips */}
-        <Card style={styles.card}>
-          <Card.Content>
-            <Text style={styles.cardTitle}>Offline Tips</Text>
-            <Text style={styles.tipText}>• Create tasks while offline - they'll sync when you reconnect</Text>
-            <Text style={styles.tipText}>• Focus sessions work completely offline</Text>
-            <Text style={styles.tipText}>• AI features require internet connection</Text>
-            <Text style={styles.tipText}>• Sync manually if automatic sync fails</Text>
-          </Card.Content>
-        </Card>
+        <View style={styles.panel}>
+          <Text style={styles.sectionTitle}>Local data</Text>
+          <Text style={styles.body}>Remove cached data on this device. Your account on the server is unchanged.</Text>
+          <Button
+            mode="outlined"
+            onPress={handleClearData}
+            style={styles.dangerBtn}
+            textColor="#e57373"
+            labelStyle={styles.dangerBtnLabel}
+          >
+            Clear offline data
+          </Button>
+        </View>
+
+        <View style={styles.panel}>
+          <Text style={styles.sectionTitle}>Tips</Text>
+          <Text style={styles.tipLine}>Tasks you add offline sync when you are back online.</Text>
+          <Text style={styles.tipLine}>Focus sessions work fully offline.</Text>
+          <Text style={styles.tipLine}>AI features need a network connection.</Text>
+          <Text style={styles.tipLine}>Use “Sync now” if something looks out of date.</Text>
+        </View>
       </ScrollView>
 
       <OfflineIndicator />
-      
-      {/* Settings Sidebar */}
-      <Sidebar 
-        isVisible={sidebarVisible} 
-        onClose={() => setSidebarVisible(false)} 
-      />
+
+      <Sidebar isVisible={sidebarVisible} onClose={() => setSidebarVisible(false)} />
     </View>
   );
 }
-
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#F7F8FA',
-    padding: 16,
-  },
-  headerRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingHorizontal: 20,
-    paddingTop: 32,
-    paddingBottom: 8,
-    backgroundColor: '#fff',
-  },
-  headerLeft: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    flex: 1,
-  },
-  headerText: {
-    marginLeft: 12,
-    flex: 1,
-  },
-  headerTitle: {
-    fontSize: 24,
-    fontWeight: 'bold',
-    color: '#222',
-  },
-  card: {
-    marginBottom: 16,
-    borderRadius: 12,
-    elevation: 2,
-  },
-  cardTitle: {
-    fontSize: 18,
-    fontWeight: 'bold',
-    color: '#222',
-    marginBottom: 12,
-  },
-  statusRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 8,
-  },
-  statusIndicator: {
-    paddingHorizontal: 12,
-    paddingVertical: 4,
-    borderRadius: 12,
-  },
-  statusText: {
-    color: 'white',
-    fontSize: 12,
-    fontWeight: 'bold',
-  },
-  statusDescription: {
-    fontSize: 14,
-    color: '#666',
-    lineHeight: 20,
-  },
-  syncInfo: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    marginBottom: 8,
-  },
-  syncLabel: {
-    fontSize: 14,
-    color: '#666',
-  },
-  syncValue: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#222',
-  },
-  syncButton: {
-    marginTop: 12,
-  },
-  featureRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingVertical: 4,
-  },
-  featureText: {
-    fontSize: 14,
-    color: '#222',
-  },
-  featureStatus: {
-    fontSize: 14,
-    fontWeight: '600',
-  },
-  dataDescription: {
-    fontSize: 14,
-    color: '#666',
-    marginBottom: 12,
-    lineHeight: 20,
-  },
-  clearButton: {
-    borderColor: '#F44336',
-  },
-  tipText: {
-    fontSize: 14,
-    color: '#666',
-    marginBottom: 8,
-    lineHeight: 20,
-  },
-}); 

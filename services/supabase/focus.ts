@@ -13,13 +13,13 @@ export const focusService = {
     return data;
   },
 
-  async getActiveSession(userId: string): Promise<FocusSession> {
+  async getActiveSession(userId: string): Promise<FocusSession | null> {
     const { data, error } = await supabase
       .from('focus_sessions')
       .select()
       .eq('user_id', userId)
       .eq('status', 'active')
-      .single();
+      .maybeSingle();
 
     if (error) throw error;
     return data;

@@ -1,24 +1,29 @@
-import React, { useEffect, useState, useCallback } from 'react';
-import { View, StyleSheet, ScrollView, Image, FlatList, TouchableOpacity, RefreshControl } from 'react-native';
-import { Text, Card, Button, useTheme, IconButton, Avatar, Modal, Portal, FAB } from 'react-native-paper';
+import React, { useEffect, useState, useCallback, useMemo } from 'react';
+import { View, StyleSheet, ScrollView, RefreshControl, Pressable, AppState } from 'react-native';
+import { Text, Card, Button, Modal, Portal, FAB, Checkbox, ProgressBar } from 'react-native-paper';
 import { useAuth } from '../../hooks/useAuth';
 import { useRouter, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { offlineTaskService } from '../../services/offline/taskService';
 import { Task } from '../../types/task';
 import BottomNavBar, { BOTTOM_NAV_TOTAL_HEIGHT } from '../../components/BottomNavBar';
-import TaskCardWithSubtasks from '../../components/tasks/TaskCardWithSubtasks';
-import Animated, { useAnimatedStyle, withSpring } from 'react-native-reanimated';
-import * as Haptics from 'expo-haptics';
 import { focusService } from '../../services/supabase/focus';
-import { Animated as RNAnimated } from 'react-native';
-import { StyleSheet as RNStyleSheet } from 'react-native';
 import OfflineIndicator from '../../components/OfflineIndicator';
-import HamburgerMenu from '../../components/HamburgerMenu';
 import Sidebar from '../../components/Sidebar';
-import UserAvatar from '../../components/UserAvatar';
+import QuestLogScreenHeader from '../../components/QuestLogScreenHeader';
 import { habitService } from '../../services/supabase/habitService';
+import { FONT_SERIF, type ThemeColors } from '../../constants/lifeTrackerDesign';
+import { useAppTheme } from '../../contexts/AppThemeContext';
+import ThemeModeToggle from '../../components/ThemeModeToggle';
+import { taskXpValue } from '../../components/tasks/TaskCardWithSubtasks';
+import { getTaskFolders } from '../../services/foldersStorage';
+import { syncDailyStreak, localDateKey } from '../../services/questStreak';
+import { getDailyFocusGoalMinutes, DAILY_FOCUS_GOAL_MIN_DEFAULT } from '../../services/dailyFocusGoalStorage';
+import { focusMinutesCompletedToday } from '../../utils/focusMinutesToday';
+import { isHabitDueOnDate } from '../../utils/habitSchedule';
+import { getLevelProgress } from '../../utils/leveling';
+import { countHabitCompletions, HABIT_DOT_DAY_COUNT } from '../../utils/habitCardHelpers';
 import { Habit } from '../../types/habit';
-import { LT } from '../../constants/lifeTrackerDesign';
+import HabitQuestCard from '../../components/habits/HabitQuestCard';
 
 // Activity mapping for display
 const ACTIVITY_OPTIONS = [
@@ -40,31 +45,6 @@ const ACTIVITY_OPTIONS = [
   { key: 'loving', label: 'Loving', emoji: '❤️' },
   { key: 'drink', label: 'Drink', emoji: '💧' },
 ];
-
-const getPriorityColor = (priority?: number) => {
-  switch (priority) {
-    case 1:
-      return '#4CAF50'; // Low - green
-    case 2:
-      return '#FFC107'; // Medium - orange
-    case 3:
-      return '#F44336'; // High - red
-    case 4:
-      return '#9C27B0'; // Urgent - purple
-    default:
-      return '#E0E0E0'; // Default/unspecified - grey
-  }
-};
-
-const formatTime = (iso: string | undefined) => {
-  if (!iso) return '';
-  const d = new Date(iso);
-  let h = d.getHours();
-  const m = d.getMinutes().toString().padStart(2, '0');
-  const ampm = h >= 12 ? 'PM' : 'AM';
-  h = h % 12 || 12;
-  return `${h}:${m} ${ampm}`;
-};
 
 // Helper function to parse date consistently
 const parseDate = (dateString: string): Date => {
@@ -89,57 +69,122 @@ const parseDate = (dateString: string): Date => {
   }
 };
 
-// Helper function to check if a date is today
-const isToday = (dateString: string): boolean => {
+/** Max height for dashboard list sections (~2 items visible; rest scroll inside). */
+const SECTION_SCROLL_MAX_HEIGHT = 280;
+
+function parseLocalDayKeyToDate(dayKey: string): Date {
+  const [y, m, d] = dayKey.split('-').map(Number);
+  return new Date(y, m - 1, d, 12, 0, 0, 0);
+}
+
+/** True if task deadline falls on the given calendar day (YYYY-MM-DD, local). */
+function deadlineOnCalendarDay(deadline: string, dayKey: string): boolean {
   try {
-    const taskDate = parseDate(dateString);
-    const today = new Date();
-    
-    // Reset both dates to start of day for comparison
-    const taskDateOnly = new Date(taskDate.getFullYear(), taskDate.getMonth(), taskDate.getDate());
-    const todayOnly = new Date(today.getFullYear(), today.getMonth(), today.getDate());
-    
-    const result = taskDateOnly.getTime() === todayOnly.getTime();
-    
-    // Debug logging
-    console.log(`isToday debug:`, {
-      originalDate: dateString,
-      parsedTaskDate: taskDate,
-      taskDateOnly: taskDateOnly,
-      today: today,
-      todayOnly: todayOnly,
-      result: result
-    });
-    
-    return result;
-  } catch (error) {
-    console.error('Error parsing date for isToday check:', error);
+    const taskDate = parseDate(deadline);
+    const ref = parseLocalDayKeyToDate(dayKey);
+    return (
+      taskDate.getFullYear() === ref.getFullYear() &&
+      taskDate.getMonth() === ref.getMonth() &&
+      taskDate.getDate() === ref.getDate()
+    );
+  } catch {
     return false;
   }
-};
+}
+
+function getTimeGreeting(): string {
+  const h = new Date().getHours();
+  if (h < 12) return 'Good morning';
+  if (h < 17) return 'Good afternoon';
+  return 'Good evening';
+}
+
+function formatHeaderDate(): string {
+  return new Date().toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric' });
+}
+
+function inferQuestTier(task: Task): { label: string; accentKey: 'amber' | 'teal' | 'blue' | 'pink' } {
+  const raw = `${task.category ?? ''} ${(task.tags ?? []).join(' ')}`.toLowerCase();
+  if (/study|edu|learn|school|course|capstone|chapter|draft/.test(raw)) return { label: 'Edu', accentKey: 'blue' };
+  if (/health|gym|workout|run|meditation|morning|ritual|evening/.test(raw)) return { label: 'Health', accentKey: 'teal' };
+  if (/habit|personal|journal/.test(raw)) return { label: 'Habit', accentKey: 'pink' };
+  if (/work|career|job|portfolio|site/.test(raw)) return { label: 'Career', accentKey: 'amber' };
+  return { label: 'Quest', accentKey: 'amber' };
+}
+
+function habitXpReward(h: Habit): number {
+  return h.xp_reward ?? 15;
+}
+
+function tierColor(accentKey: 'amber' | 'teal' | 'blue' | 'pink', c: ThemeColors): string {
+  switch (accentKey) {
+    case 'blue':
+      return c.blue;
+    case 'teal':
+      return c.teal;
+    case 'pink':
+      return c.pink;
+    default:
+      return c.amber;
+  }
+}
+
+/** Root task with no folder (null, undefined, or empty). */
+function isUngroupedRoot(t: Task): boolean {
+  if (t.parent_task_id) return false;
+  const f = t.folder_id;
+  return f == null || String(f).trim() === '';
+}
+
+function taskBelongsToFolder(t: Task, folderId: string): boolean {
+  return !!t.folder_id && String(t.folder_id) === String(folderId);
+}
+
+/** Active quests only track work still in play (not completed, failed, or deleted). */
+function isQuestActiveTask(t: Task): boolean {
+  return t.status === 'pending' || t.status === 'in_progress';
+}
+
+function computeRootQuestProgress(task: Task, allTasks: Task[]): number {
+  const subs = allTasks.filter((x) => x.parent_task_id === task.id);
+  if (subs.length > 0) {
+    const done = subs.filter((s) => s.status === 'completed').length;
+    return Math.min(100, Math.round((done / subs.length) * 100));
+  }
+  if (task.status === 'completed') return 100;
+  const tier = Math.min(3, Math.floor(taskXpValue(task) / 35));
+  if (task.status === 'in_progress') return Math.min(90, 40 + tier * 12);
+  return Math.min(45, 18 + tier * 9);
+}
 
 export default function DashboardScreen() {
+  const { colors: c } = useAppTheme();
   const { session, loading: authLoading, user } = useAuth();
   const router = useRouter();
   const params = useLocalSearchParams();
-  const theme = useTheme();
   const [sidebarVisible, setSidebarVisible] = useState(false);
-  const [tasks, setTasks] = useState<Task[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedTask, setSelectedTask] = useState<Task | null>(null);
   const [showModal, setShowModal] = useState(false);
   const [refreshFlag, setRefreshFlag] = useState(false);
   const [allActiveTasks, setAllActiveTasks] = useState<Task[]>([]);
-  const [taskOrder, setTaskOrder] = useState<string[]>([]); // store task IDs for custom order
-  const [selectedTaskToSwap, setSelectedTaskToSwap] = useState<number | null>(null); // index of first selected task
+  const [allTasksCache, setAllTasksCache] = useState<Task[]>([]);
+  const [focusTodayMin, setFocusTodayMin] = useState(0);
+  const [habitsList, setHabitsList] = useState<Habit[]>([]);
+  const [habitHistoryFull, setHabitHistoryFull] = useState<
+    { habit_id: string; date: string; value?: number }[]
+  >([]);
+  const [taskFolders, setTaskFolders] = useState<{ id: string; name: string }[]>([]);
   const [focusStats, setFocusStats] = useState({ total_duration: 0 });
   const [refreshing, setRefreshing] = useState(false);
   const [streak, setStreak] = useState(0);
-  const [completedCount, setCompletedCount] = useState(0);
-  const [failedCount, setFailedCount] = useState(0);
-  const [expandedTasks, setExpandedTasks] = useState<Set<string>>(new Set());
-  // Habits temporarily disabled
-  // const [habits, setHabits] = useState<Habit[]>([]);
+  /** Local calendar day for “today” lists; advances at midnight / resume / focus. */
+  const [calendarDayKey, setCalendarDayKey] = useState(() => localDateKey(new Date()));
+  const [dailyFocusGoalMin, setDailyFocusGoalMin] = useState(DAILY_FOCUS_GOAL_MIN_DEFAULT);
+
+  const syncCalendarDay = useCallback(() => {
+    setCalendarDayKey(localDateKey(new Date()));
+  }, []);
 
   // Listen for refresh parameter changes from chat
   useEffect(() => {
@@ -154,8 +199,6 @@ export default function DashboardScreen() {
     if (params.reset === 'true') {
       console.log('Dashboard: Reset parameter detected, refreshing all data');
       setStreak(0);
-      setCompletedCount(0);
-      setFailedCount(0);
       setFocusStats({ total_duration: 0 });
       fetchTasks();
       // Clear the reset parameter
@@ -181,27 +224,8 @@ export default function DashboardScreen() {
       console.log('Dashboard: All tasks fetched:', allTasks.length, 'tasks');
       console.log('Dashboard: User ID:', user.id);
       
-      // Filter for today's tasks that are not completed or failed (for events section)
-      // A task is considered "today's event" if it has a deadline for today OR if it's marked for today
-      const todaysTasks = allTasks.filter(task => {
-        if (task.status === 'completed' || task.status === 'failed') return false;
-        
-        // If task has a deadline, check if it's today
-        if (task.deadline) {
-          const isTodayTask = isToday(task.deadline);
-          console.log(`Dashboard: Task "${task.title}" deadline: ${task.deadline}, isToday: ${isTodayTask}`);
-          return isTodayTask;
-        }
-        
-        // If no deadline but task is active, consider it for today's events
-        // This allows tasks without specific dates to still show up
-        console.log(`Dashboard: Task "${task.title}" has no deadline, including in today's events`);
-        return true;
-      });
-      
-      console.log('Dashboard: Today\'s tasks:', todaysTasks.length);
-      setTasks(todaysTasks);
-      
+      setAllTasksCache(allTasks);
+
       // All active tasks (not completed/failed) - this is what should be shown in the main task list
       const activeTasks = allTasks.filter(task => task.status !== 'completed' && task.status !== 'failed');
       console.log('Dashboard: Active tasks:', activeTasks.length);
@@ -209,7 +233,7 @@ export default function DashboardScreen() {
       setAllActiveTasks(activeTasks);
     } catch (e) {
       console.error('Dashboard: Error fetching tasks:', e);
-      setTasks([]);
+      setAllTasksCache([]);
       setAllActiveTasks([]);
     } finally {
       setLoading(false);
@@ -217,29 +241,69 @@ export default function DashboardScreen() {
     }
   }, [user]);
 
-  // Habits temporarily disabled
-  // // Fetch habits for the user
-  // const fetchHabits = useCallback(async () => {
-  //   if (!user) return;
-  //   const userHabits = await habitService.getHabits(user.id);
-  //   setHabits(userHabits);
-  // }, [user]);
+  const loadDashboardHabits = useCallback(async () => {
+    if (!user) return;
+    try {
+      const habits = await habitService.getHabits(user.id);
+      setHabitsList(habits);
+      if (habits.length === 0) {
+        setHabitHistoryFull([]);
+        return;
+      }
+      const ids = habits.map((h) => h.id);
+      const hist = await habitService.getHabitHistoryByHabitIds(ids);
+      setHabitHistoryFull(hist);
+    } catch {
+      setHabitsList([]);
+      setHabitHistoryFull([]);
+    }
+  }, [user]);
+
+  const loadTaskFolders = useCallback(async () => {
+    if (!user) return;
+    try {
+      const folders = await getTaskFolders(user.id);
+      setTaskFolders(folders);
+    } catch {
+      setTaskFolders([]);
+    }
+  }, [user]);
+
+  /** Today’s focus minutes + lifetime focus stats (keeps dashboard in sync with the focus timer). */
+  const refreshFocusMetrics = useCallback(async () => {
+    if (!user) return;
+    try {
+      const [sessions, stats] = await Promise.all([
+        focusService.getSessions(user.id),
+        focusService.getStats(user.id),
+      ]);
+      setFocusTodayMin(focusMinutesCompletedToday(sessions));
+      setFocusStats(stats);
+    } catch {
+      setFocusTodayMin(0);
+      setFocusStats({ total_duration: 0 });
+    }
+  }, [user]);
 
   useFocusEffect(
     useCallback(() => {
+      syncCalendarDay();
+      void getDailyFocusGoalMinutes().then(setDailyFocusGoalMin);
+      void refreshFocusMetrics();
       fetchTasks();
-      // fetchHabits(); // Habits temporarily disabled
-    }, [fetchTasks])
+      loadDashboardHabits();
+      loadTaskFolders();
+    }, [syncCalendarDay, refreshFocusMetrics, fetchTasks, loadDashboardHabits, loadTaskFolders]),
   );
 
-  // useEffect(() => {
-  //   fetchHabits();
-  // }, [fetchHabits]);
-
   const onRefresh = useCallback(async () => {
+    syncCalendarDay();
     setRefreshing(true);
+    await refreshFocusMetrics();
     await fetchTasks();
-  }, [fetchTasks]);
+    await loadDashboardHabits();
+    await loadTaskFolders();
+  }, [syncCalendarDay, refreshFocusMetrics, fetchTasks, loadDashboardHabits, loadTaskFolders]);
 
   useEffect(() => {
     console.log('Dashboard: useEffect triggered with refreshFlag:', refreshFlag);
@@ -247,90 +311,259 @@ export default function DashboardScreen() {
   }, [fetchTasks, refreshFlag]);
 
   useEffect(() => {
-    if (!user) return;
-    console.log('Dashboard: Fetching focus stats for user:', user.id);
-    focusService.getStats(user.id).then(stats => {
-      console.log('Dashboard: Focus stats received:', stats);
-      setFocusStats(stats);
-    });
-  }, [user, refreshFlag]);
+    void refreshFocusMetrics();
+  }, [refreshFocusMetrics, refreshFlag, calendarDayKey]);
 
-  // Calculate streak: completed tasks minus failed tasks, minimum 0
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (state) => {
+      if (state === 'active') {
+        syncCalendarDay();
+        void refreshFocusMetrics();
+      }
+    });
+    return () => sub.remove();
+  }, [syncCalendarDay, refreshFocusMetrics]);
+
+  useEffect(() => {
+    const id = setInterval(() => {
+      const k = localDateKey(new Date());
+      setCalendarDayKey((prev) => (prev !== k ? k : prev));
+    }, 60_000);
+    return () => clearInterval(id);
+  }, []);
+
+  useEffect(() => {
+    void getDailyFocusGoalMinutes().then(setDailyFocusGoalMin);
+  }, [refreshFlag]);
+
+  useEffect(() => {
+    loadTaskFolders();
+  }, [loadTaskFolders, refreshFlag]);
+
+  useEffect(() => {
+    loadDashboardHabits();
+  }, [loadDashboardHabits, refreshFlag]);
+
   useEffect(() => {
     if (!user) return;
-    console.log('Dashboard: Calculating streak for user:', user.id);
+    let cancelled = false;
     (async () => {
+      const todayLocal = calendarDayKey;
       const allTasks = await offlineTaskService.getTasks(user.id);
-      let completed = 0;
-      let failed = 0;
-      
-      // Count completed and failed tasks (ignore pending tasks)
-      for (let i = 0; i < allTasks.length; i++) {
-        const task = allTasks[i];
-        if (task.status === 'completed') {
-          completed++;
-        } else if (task.status === 'failed') {
-          failed++;
+      if (cancelled) return;
+      const taskActivityToday = allTasks.some(
+        (t) =>
+          t.status === 'completed' &&
+          t.updated_at &&
+          localDateKey(new Date(t.updated_at)) === todayLocal,
+      );
+      let habitActivityToday = false;
+      try {
+        const habits = await habitService.getHabits(user.id);
+        if (habits.length > 0) {
+          const ids = habits.map((h) => h.id);
+          const hist = await habitService.getHabitHistoryByHabitIds(ids);
+          habitActivityToday = hist.some(
+            (h) => h.date === todayLocal && (h.value ?? 0) > 0,
+          );
         }
-        // Skip pending tasks as they don't affect the streak
+      } catch {
+        habitActivityToday = false;
       }
-      
-      // Calculate streak: completed - failed, minimum 0
-      const currentStreak = Math.max(0, completed - failed);
-      
-      setCompletedCount(completed);
-      setFailedCount(failed);
-      setStreak(currentStreak);
-      
-      console.log('Dashboard: Streak calculation:', {
-        completed,
-        failed,
-        streak: currentStreak,
-        rawCalculation: completed - failed,
-        totalTasks: allTasks.length
-      });
+      let focusActivityToday = false;
+      try {
+        const sessions = await focusService.getSessions(user.id);
+        if (cancelled) return;
+        focusActivityToday = focusMinutesCompletedToday(sessions) > 0;
+      } catch {
+        focusActivityToday = false;
+      }
+      const s = await syncDailyStreak(
+        user.id,
+        taskActivityToday || habitActivityToday || focusActivityToday,
+      );
+      if (!cancelled) setStreak(s);
     })();
-  }, [user, refreshFlag]);
+    return () => {
+      cancelled = true;
+    };
+  }, [user, refreshFlag, calendarDayKey]);
 
-  // Add delete task handler
-  const handleDeleteTask = async (taskId: string) => {
-    console.log('Dashboard: handleDeleteTask called with taskId:', taskId);
-    try {
-      // The offlineTaskService.deleteTask now handles subtask deletion automatically
-      console.log('Dashboard: Calling offlineTaskService.deleteTask...');
-      await offlineTaskService.deleteTask(taskId);
-      console.log('Dashboard: Task deleted successfully');
-      
-      // Refresh the task list
-      console.log('Dashboard: Triggering refresh with setRefreshFlag');
-      setRefreshFlag(f => !f);
-      console.log('Dashboard: Refresh flag updated');
-    } catch (error) {
-      console.error('Dashboard: Error deleting task:', error);
+  const shell = useMemo(
+    () => ({
+      bg: c.bg,
+      surf: c.surf,
+      tx: c.tx,
+      tx2: c.tx2,
+      tx3: c.tx3,
+      border: c.borderDefault,
+    }),
+    [c],
+  );
+
+  const activeQuestRows = useMemo(() => {
+    const pool = allTasksCache.length ? allTasksCache : [];
+    const roots = pool.filter((t) => !t.parent_task_id);
+    const folderIds = new Set(taskFolders.map((f) => f.id));
+    const accentRotate: Array<'amber' | 'teal' | 'blue' | 'pink'> = ['amber', 'teal', 'blue'];
+    const rows: {
+      id: string;
+      title: string;
+      tier: string;
+      accentKey: 'amber' | 'teal' | 'blue' | 'pink';
+      color: string;
+      progress: number;
+    }[] = [];
+
+    for (const f of taskFolders) {
+      const rootsInFolder = roots.filter((t) => taskBelongsToFolder(t, f.id));
+      const activeInFolder = rootsInFolder.filter(isQuestActiveTask);
+      if (activeInFolder.length === 0) continue;
+      /** Folder quest bar: 0% until roots complete; linear % of roots done (not heuristic per-task progress). */
+      const totalRoots = rootsInFolder.length;
+      const completedRoots = rootsInFolder.filter((t) => t.status === 'completed').length;
+      const progress =
+        totalRoots > 0 ? Math.min(100, Math.round((completedRoots / totalRoots) * 100)) : 0;
+      const accentKey = accentRotate[rows.length % accentRotate.length];
+      const { label: tierLabel } = inferQuestTier(activeInFolder[0]);
+      rows.push({
+        id: `folder-${f.id}`,
+        title: f.name.length > 40 ? `${f.name.slice(0, 38)}…` : f.name,
+        tier: tierLabel,
+        accentKey,
+        color: tierColor(accentKey, c),
+        progress,
+      });
     }
-  };
 
-  // Add delete subtask handler
-  const handleDeleteSubtask = async (subtaskId: string) => {
-    try {
-      await offlineTaskService.deleteTask(subtaskId);
-      setRefreshFlag(f => !f);
-    } catch (error) {
-      console.error('Error deleting subtask:', error);
+    const ungroupedRoots = roots.filter(
+      (t) =>
+        isUngroupedRoot(t) ||
+        (!!t.folder_id && String(t.folder_id).trim() !== '' && !folderIds.has(String(t.folder_id))),
+    );
+    for (const task of ungroupedRoots) {
+      if (!isQuestActiveTask(task)) continue;
+      const progress = computeRootQuestProgress(task, pool);
+      const { label, accentKey } = inferQuestTier(task);
+      rows.push({
+        id: `task-${task.id}`,
+        title: task.title.length > 40 ? `${task.title.slice(0, 38)}…` : task.title,
+        tier: label,
+        accentKey,
+        color: tierColor(accentKey, c),
+        progress,
+      });
     }
-  };
 
-  // Sort tasks by priority (highest first), then by custom order if set
-  const sortedTasks = allActiveTasks
-    .slice()
-    .sort((a, b) => {
-      if (a.priority !== b.priority) return b.priority - a.priority;
-      // If custom order exists, use it
-      const idxA = taskOrder.indexOf(a.id);
-      const idxB = taskOrder.indexOf(b.id);
-      if (idxA !== -1 && idxB !== -1) return idxA - idxB;
-      return 0;
+    rows.sort((a, b) => a.progress - b.progress);
+    return rows.slice(0, 3);
+  }, [allTasksCache, taskFolders, c]);
+
+  const todayTasksList = useMemo(() => {
+    const all = allTasksCache.length ? allTasksCache : allActiveTasks;
+    const roots = all.filter((t) => !t.parent_task_id);
+    const onToday = roots.filter((t) => {
+      if (!t.deadline) return false;
+      return deadlineOnCalendarDay(t.deadline, calendarDayKey);
     });
+    return onToday
+      .slice()
+      .sort((a, b) => {
+        if (a.status === 'completed' && b.status !== 'completed') return 1;
+        if (a.status !== 'completed' && b.status === 'completed') return -1;
+        return taskXpValue(b) - taskXpValue(a);
+      })
+      .slice(0, 8);
+  }, [allTasksCache, allActiveTasks, calendarDayKey]);
+
+  const habitDueStats = useMemo(() => {
+    const ref = parseLocalDayKeyToDate(calendarDayKey);
+    const due = habitsList.filter((h) => isHabitDueOnDate(h, ref));
+    const doneIds = new Set(
+      habitHistoryFull
+        .filter((h) => h.date === calendarDayKey && (h.value ?? 0) > 0)
+        .map((h) => h.habit_id),
+    );
+    return {
+      dueToday: due.length,
+      doneAmongDue: due.filter((h) => doneIds.has(h.id)).length,
+    };
+  }, [habitsList, habitHistoryFull, calendarDayKey]);
+
+  const totalXP = useMemo(() => {
+    const completedTasks = allTasksCache.filter((t) => t.status === 'completed');
+    const taskXp = completedTasks.reduce((s, t) => s + taskXpValue(t), 0);
+    const habitMap = new Map(habitsList.map((h) => [h.id, h]));
+    let habitXp = 0;
+    for (const row of habitHistoryFull) {
+      if ((row.value ?? 0) <= 0) continue;
+      const h = habitMap.get(row.habit_id);
+      if (!h) continue;
+      habitXp += habitXpReward(h);
+    }
+    const focusXp = Math.floor(focusStats.total_duration);
+    return Math.max(0, taskXp + habitXp + focusXp);
+  }, [allTasksCache, habitsList, habitHistoryFull, focusStats.total_duration]);
+
+  const levelProgress = useMemo(() => getLevelProgress(totalXP), [totalXP]);
+
+  /** All habits scheduled for today (incl. brand-new), sorted by most lifetime logs; caps list length. */
+  const dashboardHabits = useMemo(() => {
+    const ref = parseLocalDayKeyToDate(calendarDayKey);
+    const due = habitsList.filter((h) => isHabitDueOnDate(h, ref));
+    return due
+      .slice()
+      .sort(
+        (a, b) =>
+          countHabitCompletions(b.id, habitHistoryFull) -
+          countHabitCompletions(a.id, habitHistoryFull),
+      )
+      .slice(0, 8);
+  }, [habitsList, habitHistoryFull, calendarDayKey]);
+
+  const logHabitToday = useCallback(
+    async (habitId: string) => {
+      try {
+        await habitService.logHabitProgress(habitId, localDateKey(new Date()), 1);
+        setRefreshFlag((f) => !f);
+      } catch (e) {
+        console.error('logHabitToday', e);
+      }
+    },
+    [],
+  );
+
+  const dailyXPBadge = useMemo(() => {
+    const today = calendarDayKey;
+    const all = allTasksCache.length ? allTasksCache : [];
+    const tasksCompletedToday = all.filter(
+      (t) =>
+        t.status === 'completed' &&
+        t.updated_at &&
+        localDateKey(new Date(t.updated_at)) === today,
+    );
+    const taskXpToday = tasksCompletedToday.reduce((s, t) => s + taskXpValue(t), 0);
+    const habitMap = new Map(habitsList.map((h) => [h.id, h]));
+    let habitXpToday = 0;
+    for (const row of habitHistoryFull) {
+      if (row.date !== today || (row.value ?? 0) <= 0) continue;
+      const h = habitMap.get(row.habit_id);
+      if (!h) continue;
+      habitXpToday += habitXpReward(h);
+    }
+    return taskXpToday + habitXpToday + focusTodayMin;
+  }, [allTasksCache, focusTodayMin, habitsList, habitHistoryFull, calendarDayKey]);
+
+  const displayName = useMemo(() => {
+    const meta = user?.user_metadata as { full_name?: string; name?: string; username?: string } | undefined;
+    return meta?.full_name?.trim() || meta?.name?.trim() || meta?.username?.trim() || user?.email?.split('@')[0] || 'Hero';
+  }, [user]);
+
+  const taskMetaLine = (task: Task) => {
+    const q = inferQuestTier(task);
+    const label = task.category?.trim() || q.label;
+    return `${label} · +${taskXpValue(task)} XP`;
+  };
 
   // Move task to previous (completed/failed) by updating its status
   const handleTaskStatus = async (task: Task, status: 'completed' | 'failed') => {
@@ -342,16 +575,14 @@ export default function DashboardScreen() {
     } catch (e) {}
   };
 
-  const toggleSubtasks = (taskId: string) => {
-    setExpandedTasks(prev => {
-      const newSet = new Set(prev);
-      if (newSet.has(taskId)) {
-        newSet.delete(taskId);
-      } else {
-        newSet.add(taskId);
-      }
-      return newSet;
-    });
+  const toggleTodayTaskComplete = async (task: Task) => {
+    try {
+      const nextStatus = task.status === 'completed' ? 'pending' : 'completed';
+      await offlineTaskService.updateTaskStatus(task.id, nextStatus);
+      setRefreshFlag((f) => !f);
+    } catch (e) {
+      console.error('toggleTodayTaskComplete', e);
+    }
   };
 
   // Handler for opening the task modal
@@ -363,288 +594,289 @@ export default function DashboardScreen() {
   if (authLoading) return null;
   if (!session?.user) return null;
 
-  // Filter today's tasks for events section
-  const todaysEvents = tasks;
-  const numEvents = todaysEvents.length;
-  const mainEvent = todaysEvents[0];
-
-  const TaskCardAnimated = ({ item, index, isSelected, onLongPress, onPress }) => {
-    const animatedStyle = useAnimatedStyle(() => ({
-      transform: [
-        { scale: withSpring(isSelected ? 1.08 : 1) },
-        { translateY: withSpring(isSelected ? -8 : 0) },
-        { translateX: withSpring(isSelected ? 4 : 0) },
-        { rotateZ: isSelected ? '-2deg' : '0deg' },
-      ] as any,
-    }));
-
-    // Use calendar card layout
-    return (
-      <TouchableOpacity
-        activeOpacity={0.85}
-        onLongPress={onLongPress}
-        onPress={onPress}
-        style={{ width: '100%', marginBottom: 14 }}
-      >
-        <Animated.View style={[
-          styles.taskCard,
-          animatedStyle,
-          { zIndex: isSelected ? 20 : 1 },
-          isSelected && { borderWidth: 2, borderColor: LT.amber },
-        ]}>
-          <Card style={[styles.eventCard, { borderLeftColor: getPriorityColor(item.priority) }]}> 
-            <Card.Content style={{ flexDirection: 'row', alignItems: 'center' }}>
-              <View style={[styles.eventPriorityDot, { backgroundColor: getPriorityColor(item.priority) }]} />
-              <View style={{ flex: 1 }}>
-                <Text style={styles.eventTitle}>{item.title}</Text>
-                <Text style={styles.eventTime}>{item.startTime && item.endTime ? `${formatTime(item.startTime)} - ${formatTime(item.endTime)}` : 'All day'}</Text>
-                {item.description && (
-                  <Text style={styles.eventDescription} numberOfLines={2}>{item.description}</Text>
-                )}
-              </View>
-            </Card.Content>
-          </Card>
-        </Animated.View>
-      </TouchableOpacity>
-    );
-  };
-
-  const renderTaskItem = ({ item, index }) => {
-    const isSelected = selectedTaskToSwap === index;
-
-    const handleLongPress = () => {
-      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-      setSelectedTaskToSwap(index);
-    };
-
-    const handlePress = () => {
-      if (selectedTaskToSwap !== null && selectedTaskToSwap !== index) {
-        // Swap tasks
-        const newTasks = [...sortedTasks];
-        const temp = newTasks[selectedTaskToSwap];
-        newTasks[selectedTaskToSwap] = newTasks[index];
-        newTasks[index] = temp;
-        setAllActiveTasks(newTasks);
-        setTaskOrder(newTasks.map(task => task.id));
-        setSelectedTaskToSwap(null);
-      } else if (selectedTaskToSwap === null) {
-        handleTaskCardPress(item);
-      } else {
-        setSelectedTaskToSwap(null); // Deselect if same
-      }
-    };
-
-    return (
-      <TaskCardAnimated
-        key={item.id}
-        item={item}
-        index={index}
-        isSelected={isSelected}
-        onLongPress={handleLongPress}
-        onPress={handlePress}
-      />
-    );
-  };
+  const goalCap = Math.max(1, dailyFocusGoalMin);
+  const focusProgress = Math.min(1, focusTodayMin / goalCap);
+  const focusRemain = Math.max(0, dailyFocusGoalMin - focusTodayMin);
 
   return (
-    <View style={{ flex: 1, backgroundColor: theme.colors.background }}>
-      <ScrollView 
-        style={{ flex: 1, backgroundColor: theme.colors.background }}
-        contentContainerStyle={{ paddingBottom: BOTTOM_NAV_TOTAL_HEIGHT + 60 }}
-        refreshControl={
-          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
-        }
+    <View style={{ flex: 1, backgroundColor: shell.bg }}>
+      <ScrollView
+        style={{ flex: 1, backgroundColor: shell.bg }}
+        contentContainerStyle={{ paddingBottom: BOTTOM_NAV_TOTAL_HEIGHT + 72 }}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
       >
-        <View style={styles.headerRow}>
-          <View style={styles.headerLeft}>
-            <HamburgerMenu onPress={() => setSidebarVisible(true)} isOpen={sidebarVisible} />
-            <View style={styles.headerText}>
-              <Text style={styles.headerTitle}>Home</Text>
-              <Text style={styles.greeting}>Welcome! Let's get started!</Text>
-              <Text style={styles.subtext}>Here are your plans for today</Text>
-            </View>
+        <QuestLogScreenHeader
+          title="Dashboard"
+          sidebarVisible={sidebarVisible}
+          onOpenSidebar={() => setSidebarVisible(true)}
+          titleColor={shell.tx}
+          right={<ThemeModeToggle />}
+        />
+
+        <View style={styles.heroBlock}>
+          <View style={{ flex: 1, minWidth: 0 }}>
+            <Text style={[styles.heroGreeting, { color: shell.tx }]}>
+              {getTimeGreeting()}, {displayName}
+            </Text>
+            <Text style={[styles.heroSub, { color: shell.tx2 }]}>
+              {formatHeaderDate()} · Lvl {levelProgress.level}
+              {levelProgress.xpSpanThisLevel > 0
+                ? ` · ${levelProgress.xpIntoLevel}/${levelProgress.xpSpanThisLevel} XP`
+                : ''}
+            </Text>
           </View>
-          <View style={styles.headerActions}>
-            <UserAvatar
-              size={48}
-              showBorder={true}
-              borderColor={LT.amber}
-            />
+          <View style={[styles.dailyXpPill, { borderColor: c.amberBorder, backgroundColor: c.amberBg }]}>
+            <Text style={[styles.dailyXpPillText, { color: c.amber }]}>+{dailyXPBadge} XP</Text>
           </View>
         </View>
 
-        <View style={styles.statsRow}>
-          <View style={styles.statCard}>
-            <IconButton icon="clock-outline" size={20} iconColor={theme.colors.primary} style={styles.statIcon} />
-            <Text style={styles.statValue}>{Math.floor(focusStats.total_duration / 60)}h {focusStats.total_duration % 60}m</Text>
+        <View style={styles.statGrid}>
+          <View style={[styles.statCell, { borderColor: shell.border, backgroundColor: shell.surf }]}>
+            <Text style={[styles.statCellValue, { color: c.amber }]}>{totalXP.toLocaleString()}</Text>
+            <Text style={[styles.statCellLabel, { color: shell.tx2 }]}>Total XP</Text>
           </View>
-          {/* Streak Box */}
-          <View style={[
-            styles.streakCard, 
-            streak >= 3 && styles.streakCardGlow,
-            failedCount > 0 && streak === 0 && styles.streakCardFailed
-          ]}>
-            <View style={styles.streakContent}>
-              <RNAnimated.Text
-                style={[
-                  styles.streakFire,
-                  streak >= 3 && styles.streakFireGlow,
-                  failedCount > 0 && streak === 0 && styles.streakFireFailed
-                ]}
-              >
-                {failedCount > 0 && streak === 0 ? '💔' : '🔥'}
-              </RNAnimated.Text>
-              <View style={styles.streakTextContainer}>
-                <Text style={styles.streakValue}>{streak}</Text>
-                <Text style={styles.streakLabel}>Streak</Text>
-                {failedCount > 0 && (
-                  <Text style={styles.streakSubtext}>
-                    -{failedCount} failed
-                  </Text>
-                )}
-              </View>
-            </View>
+          <View style={[styles.statCell, { borderColor: shell.border, backgroundColor: shell.surf }]}>
+            <Text style={[styles.statCellValue, { color: c.teal }]}>{streak}d</Text>
+            <Text style={[styles.statCellLabel, { color: shell.tx2 }]}>Streak</Text>
+          </View>
+          <View style={[styles.statCell, { borderColor: shell.border, backgroundColor: shell.surf }]}>
+            <Text style={[styles.statCellValue, { color: c.blue }]}>
+              {Math.round(focusStats.total_duration)}m
+            </Text>
+            <Text style={[styles.statCellLabel, { color: shell.tx2 }]}>Focus</Text>
+          </View>
+          <View style={[styles.statCell, { borderColor: shell.border, backgroundColor: shell.surf }]}>
+            <Text style={[styles.statCellValue, { color: c.pink }]}>
+              {habitDueStats.dueToday > 0
+                ? `${habitDueStats.doneAmongDue}/${habitDueStats.dueToday}`
+                : '—'}
+            </Text>
+            <Text style={[styles.statCellLabel, { color: shell.tx2 }]}>Habits</Text>
           </View>
         </View>
 
-        {/* Events of Today Section - now also shows today's habits */}
-        <Card style={styles.eventCard}>
-          <Card.Content>
-            {numEvents > 0 ? (
-              <>
-                <Text style={styles.eventTitle}>YOU HAVE {numEvents} {numEvents === 1 ? 'EVENT' : 'EVENTS'} TODAY</Text>
-                <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 4 }}>
-                  <Text style={styles.eventMain}>{mainEvent.title}</Text>
-                  <Text style={styles.eventNow}>now</Text>
-                </View>
-                {mainEvent.deadline && (
-                  <Text style={styles.eventTime}>
+        <View style={[styles.sectionCard, { borderColor: shell.border, backgroundColor: shell.surf }]}>
+          <Text style={[styles.sectionHeading, { color: shell.tx }]}>Active Quests</Text>
+          {loading ? (
+            <Text style={[styles.mutedCenter, { color: shell.tx2 }]}>Loading…</Text>
+          ) : activeQuestRows.length === 0 ? (
+            <Text style={[styles.mutedCenter, { color: shell.tx2 }]}>
+              No active quests yet. Add root-level tasks: ungrouped tasks show as their own quest; folder tasks
+              share a bar per folder.
+            </Text>
+          ) : (
+            <ScrollView
+              nestedScrollEnabled
+              style={styles.sectionScroll}
+              contentContainerStyle={styles.sectionScrollContent}
+              showsVerticalScrollIndicator
+              keyboardShouldPersistTaps="handled"
+            >
+              {activeQuestRows.map((row) => (
+                <Pressable key={row.id} style={styles.questRow} onPress={() => router.push('/(app)/tasks')}>
+                  <View style={styles.questTop}>
+                    <Text numberOfLines={1} style={[styles.questTitle, { color: shell.tx }]}>
+                      {row.title}
+                    </Text>
+                    <View style={styles.questRight}>
+                      <View
+                        style={[
+                          styles.tierPill,
+                          {
+                            backgroundColor:
+                              row.accentKey === 'blue'
+                                ? c.blueBg
+                                : row.accentKey === 'teal'
+                                  ? c.tealBg
+                                  : row.accentKey === 'pink'
+                                    ? c.pinkBg
+                                    : c.amberBg,
+                            borderColor:
+                              row.accentKey === 'blue'
+                                ? c.blueBorder
+                                : row.accentKey === 'teal'
+                                  ? c.tealBorder
+                                  : row.accentKey === 'pink'
+                                    ? c.pinkBorder
+                                    : c.amberBorder,
+                          },
+                        ]}
+                      >
+                        <Text style={[styles.tierPillText, { color: row.color }]}>{row.tier}</Text>
+                      </View>
+                      <Text style={[styles.questPct, { color: row.color }]}>{row.progress}%</Text>
+                    </View>
+                  </View>
+                  <ProgressBar progress={row.progress / 100} color={row.color} style={styles.questBar} />
+                </Pressable>
+              ))}
+            </ScrollView>
+          )}
+        </View>
+
+        <View style={[styles.sectionCard, { borderColor: shell.border, backgroundColor: shell.surf }]}>
+          <Text style={[styles.sectionHeading, { color: shell.tx }]}>Habits</Text>
+          {dashboardHabits.length === 0 ? (
+            <Text style={[styles.mutedCenter, { color: shell.tx2 }]}>
+              Habits that are due today appear here (new habits included). Dots show the last {HABIT_DOT_DAY_COUNT}{' '}
+              days.
+            </Text>
+          ) : (
+            <ScrollView
+              nestedScrollEnabled
+              style={styles.sectionScroll}
+              contentContainerStyle={styles.sectionScrollContent}
+              showsVerticalScrollIndicator
+              keyboardShouldPersistTaps="handled"
+            >
+              {dashboardHabits.map((habit) => (
+                <HabitQuestCard
+                  key={habit.id}
+                  habit={habit}
+                  rowsForHabit={habitHistoryFull
+                    .filter((r) => r.habit_id === habit.id)
+                    .map((r) => ({ date: r.date, value: r.value }))}
+                  onLogToday={() => logHabitToday(habit.id)}
+                />
+              ))}
+            </ScrollView>
+          )}
+        </View>
+
+        <View style={[styles.sectionCard, { borderColor: shell.border, backgroundColor: shell.surf }]}>
+          <Text style={[styles.sectionHeading, { color: shell.tx }]}>Today's Tasks</Text>
+          {loading ? (
+            <Text style={[styles.mutedCenter, { color: shell.tx2 }]}>Loading…</Text>
+          ) : todayTasksList.length === 0 ? (
+            <Text style={[styles.mutedCenter, { color: shell.tx2 }]}>
+              No tasks due today. Set a deadline for today on a task to see it here.
+            </Text>
+          ) : (
+            <ScrollView
+              nestedScrollEnabled
+              style={styles.sectionScroll}
+              contentContainerStyle={styles.sectionScrollContent}
+              showsVerticalScrollIndicator
+              keyboardShouldPersistTaps="handled"
+            >
+              {todayTasksList.map((task, i) => {
+                const done = task.status === 'completed';
+                return (
+                  <View
+                    key={task.id}
+                    style={[styles.todayRow, i > 0 && [styles.todayDivider, { borderTopColor: shell.border }]]}
+                  >
+                    <Checkbox
+                      status={done ? 'checked' : 'unchecked'}
+                      onPress={() => toggleTodayTaskComplete(task)}
+                      color={c.teal}
+                    />
+                    <Pressable style={styles.todayTextCol} onPress={() => handleTaskCardPress(task)}>
+                      <Text
+                        style={[
+                          styles.todayTitle,
+                          { color: done ? shell.tx2 : shell.tx },
+                          done && styles.todayTitleDone,
+                        ]}
+                      >
+                        {task.title}
+                      </Text>
+                      <Text style={[styles.todayMeta, { color: shell.tx3 }]}>{taskMetaLine(task)}</Text>
+                    </Pressable>
+                  </View>
+                );
+              })}
+            </ScrollView>
+          )}
+        </View>
+
+        <View style={[styles.sectionCard, { borderColor: shell.border, backgroundColor: shell.surf }]}>
+          <View style={styles.focusHeader}>
+            <Text style={[styles.sectionHeading, { color: shell.tx, marginBottom: 0 }]}>Focus today</Text>
+            <Text style={[styles.focusRatio, { color: shell.tx2 }]}>
+              {focusTodayMin} / {dailyFocusGoalMin} min
+            </Text>
+          </View>
+          <ProgressBar progress={focusProgress} color={c.teal} style={styles.focusBar} />
+          <Text style={[styles.focusHint, { color: shell.tx2 }]}>
+            {focusRemain === 0
+              ? 'Daily goal reached'
+              : `${focusRemain} minutes to reach daily goal`}
+          </Text>
+        </View>
+      </ScrollView>
+
+      <Portal>
+        <Modal
+          visible={showModal}
+          onDismiss={() => setShowModal(false)}
+          contentContainerStyle={[styles.modalContainer, { backgroundColor: c.surfaceElevated }]}
+        >
+          {selectedTask && (
+            <Card style={styles.detailCard}>
+              <Card.Title title={selectedTask.title} />
+              <Card.Content>
+                <Text style={{ marginBottom: 8 }}>{selectedTask.description}</Text>
+                <Text>Status: {selectedTask.status}</Text>
+                {selectedTask.deadline && (
+                  <Text style={{ marginTop: 4 }}>
+                    Date:{' '}
                     {(() => {
-                      try {
-                        const date = parseDate(mainEvent.deadline);
-                        return date.toLocaleDateString();
-                      } catch (error) {
-                        console.error('Error formatting event time:', error);
-                        return 'Today';
-                      }
+                      const date = parseDate(selectedTask.deadline);
+                      return date.toLocaleDateString();
                     })()}
                   </Text>
                 )}
-                {mainEvent.description && (
-                  <Text style={styles.eventDescription} numberOfLines={2}>
-                    {mainEvent.description}
-                  </Text>
-                )}
-              </>
-            ) : (
-              <>
-                <Text style={styles.eventTitle}>No events for today</Text>
-                <Text style={styles.eventDescription}>
-                  Create a task with today's date to see it here
-                </Text>
-              </>
-            )}
-            {/* Habits for today - temporarily disabled */}
-          </Card.Content>
-        </Card>
-
-        {/* Habits Section - temporarily disabled */}
-
-        {/* Task Section: show all active tasks with subtask support */}
-        <View style={styles.taskSectionContainer}>
-          <Text style={styles.taskSectionTitle}>All Tasks ({sortedTasks.length})</Text>
-          <ScrollView 
-            style={styles.taskScrollContainer}
-            showsVerticalScrollIndicator={false}
-            nestedScrollEnabled={true}
-          >
-            {loading ? (
-              <Text style={styles.noTasks}>Loading tasks...</Text>
-            ) : sortedTasks.length === 0 ? (
-              <View style={styles.noTasksContainer}>
-                <Text style={styles.noTasks}>No active tasks.</Text>
-                <Text style={styles.noTasksSubtext}>
-                  Create a new task to get started
-                </Text>
-              </View>
-            ) : (
-              <View style={styles.taskListContainer}>
-                {sortedTasks.map((task) => {
-                  // Skip subtasks as they'll be shown under their parent
-                  if (task.parent_task_id) return null;
-                  
-                  return (
-                    <TaskCardWithSubtasks
-                      key={task.id}
-                      task={task}
-                      allTasks={sortedTasks}
-                      variant="dashboard"
-                      onStatusChange={(taskId, status) => {
-                        const taskToUpdate = sortedTasks.find(t => t.id === taskId);
-                        if (taskToUpdate) {
-                          handleTaskStatus(taskToUpdate, status as 'completed' | 'failed');
-                        }
-                      }}
-                      onPress={handleTaskCardPress}
-                      expanded={expandedTasks.has(task.id)}
-                      onToggleExpand={toggleSubtasks}
-                      onDelete={handleDeleteTask}
-                      onDeleteSubtask={handleDeleteSubtask}
-                    />
-                  );
-                })}
-              </View>
-            )}
-          </ScrollView>
-        </View>
-        <Portal>
-          <Modal visible={showModal} onDismiss={() => setShowModal(false)} contentContainerStyle={styles.modalContainer}>
-            {selectedTask && (
-              <Card style={styles.detailCard}>
-                <Card.Title title={selectedTask.title} />
-                <Card.Content>
-                  <Text style={{ marginBottom: 8 }}>{selectedTask.description}</Text>
-                  <Text>Status: {selectedTask.status}</Text>
-                  {selectedTask.deadline && (
-                    <Text style={{ marginTop: 4 }}>Date: {(() => {
-                      const date = parseDate(selectedTask.deadline);
-                      return date.toLocaleDateString();
-                    })()}</Text>
-                  )}
-                  {selectedTask.activities && selectedTask.activities.length > 0 && (
-                    <View style={styles.modalActivitiesContainer}>
-                      <Text style={styles.modalActivitiesTitle}>Activities:</Text>
-                      <View style={styles.modalActivitiesList}>
-                        {selectedTask.activities.map((activityKey, idx) => {
-                          const activity = ACTIVITY_OPTIONS.find(a => a.key === activityKey);
-                          return activity ? (
-                            <View key={idx} style={styles.modalActivityItem}>
-                              <Text style={styles.modalActivityEmoji}>{activity.emoji}</Text>
-                              <Text style={styles.modalActivityLabel}>{activity.label}</Text>
-                            </View>
-                          ) : null;
-                        })}
-                      </View>
+                {selectedTask.activities && selectedTask.activities.length > 0 && (
+                  <View style={styles.modalActivitiesContainer}>
+                    <Text style={[styles.modalActivitiesTitle, { color: c.tx }]}>Activities:</Text>
+                    <View style={styles.modalActivitiesList}>
+                      {selectedTask.activities.map((activityKey, idx) => {
+                        const activity = ACTIVITY_OPTIONS.find((a) => a.key === activityKey);
+                        return activity ? (
+                          <View key={idx} style={[styles.modalActivityItem, { backgroundColor: c.surface }]}>
+                            <Text style={styles.modalActivityEmoji}>{activity.emoji}</Text>
+                            <Text style={[styles.modalActivityLabel, { color: c.parchmentMuted }]}>{activity.label}</Text>
+                          </View>
+                        ) : null;
+                      })}
                     </View>
-                  )}
-                </Card.Content>
-                <Card.Actions>
-                  <Button mode="contained" onPress={() => handleTaskStatus(selectedTask, 'completed')} buttonColor={LT.teal} textColor={LT.bg} style={{ marginRight: 8 }}>Completed</Button>
-                  <Button mode="contained" onPress={() => handleTaskStatus(selectedTask, 'failed')} buttonColor="#cf6679" textColor={LT.bg}>Failed</Button>
-                  <Button onPress={() => setShowModal(false)}>Close</Button>
-                </Card.Actions>
-              </Card>
-            )}
-          </Modal>
-        </Portal>
-      </ScrollView>
+                  </View>
+                )}
+              </Card.Content>
+              <Card.Actions>
+                <Button
+                  mode="contained"
+                  onPress={() => handleTaskStatus(selectedTask, 'completed')}
+                  buttonColor={c.teal}
+                  textColor={c.onAccent}
+                  style={{ marginRight: 8 }}
+                >
+                  Completed
+                </Button>
+                <Button
+                  mode="contained"
+                  onPress={() => handleTaskStatus(selectedTask, 'failed')}
+                  buttonColor="#cf6679"
+                  textColor={c.onAccent}
+                >
+                  Failed
+                </Button>
+                <Button onPress={() => setShowModal(false)}>Close</Button>
+              </Card.Actions>
+            </Card>
+          )}
+        </Modal>
+      </Portal>
+
       <BottomNavBar />
-      {/* Chat FAB */}
+      {/* AI Oracle FAB — docs/design.md ✦ */}
       <FAB
-        icon="chat"
-        style={styles.chatFab}
+        icon="star-four-points"
+        style={[styles.chatFab, { backgroundColor: c.amber }]}
         onPress={() => router.push('/(app)/chat')}
-        color={LT.bg}
+        color={c.onAccent}
+        accessibilityLabel="Open AI Oracle"
       />
       <OfflineIndicator />
       
@@ -657,218 +889,173 @@ export default function DashboardScreen() {
   );
 }
 
-function formatEventTime(deadline: string) {
-  const date = parseDate(deadline);
-  return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-}
-
 const styles = StyleSheet.create({
-  headerRow: {
+  heroBlock: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
+    alignItems: 'flex-start',
     paddingHorizontal: 20,
-    paddingTop: 32,
-    paddingBottom: 8,
-  },
-  headerLeft: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    flex: 1,
-  },
-  headerText: {
-    marginLeft: 12,
-    flex: 1,
-  },
-  headerTitle: {
-    fontSize: 24,
-    fontWeight: 'bold',
-    color: LT.parchment,
-    marginBottom: 4,
-  },
-  greeting: {
-    fontSize: 22,
-    fontWeight: 'bold',
-    color: LT.parchment,
-    letterSpacing: 1.2,
-  },
-  subtext: {
-    color: LT.parchmentMuted,
-    fontSize: 14,
-    marginTop: 2,
-  },
-  statsRow: {
-    flexDirection: 'row',
-    justifyContent: 'flex-start',
-    alignItems: 'center',
-    paddingHorizontal: 20,
-    marginBottom: 12,
-    gap: 16,
-  },
-  statCard: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: LT.surfaceElevated,
-    borderRadius: 16,
-    paddingVertical: 8,
-    paddingHorizontal: 16,
-    marginRight: 12,
-  },
-  statIcon: {
-    margin: 0,
-    marginRight: 4,
-  },
-  statValue: {
-    fontSize: 16,
-    fontWeight: 'bold',
-    color: LT.parchment,
-  },
-  eventCard: {
-    marginBottom: 12,
-    borderRadius: 14,
-    backgroundColor: LT.surfaceElevated,
-    borderLeftWidth: 5,
-    elevation: 2,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.08,
-    shadowRadius: 8,
-  },
-  eventPriorityDot: {
-    width: 12,
-    height: 12,
-    borderRadius: 6,
-    marginRight: 10,
-  },
-  eventTitle: {
-    fontSize: 16,
-    fontWeight: 'bold',
-    color: LT.parchment,
-  },
-  eventTime: {
-    fontSize: 13,
-    color: LT.parchmentMuted,
-    marginTop: 2,
-  },
-  eventDescription: {
-    fontSize: 12,
-    color: LT.parchmentMuted,
-    marginTop: 2,
-  },
-  eventMain: {
-    fontSize: 18,
-    fontWeight: 'bold',
-    color: LT.parchment,
-  },
-  eventNow: {
-    fontSize: 14,
-    color: LT.amber,
-    fontWeight: 'bold',
-    marginLeft: 8,
-  },
-  taskSectionContainer: {
-    paddingHorizontal: 20,
-    marginTop: 8,
-    marginBottom: 20,
-  },
-  taskSectionTitle: {
-    fontSize: 20,
-    fontWeight: 'bold',
-    color: LT.parchment,
-    marginBottom: 12,
-  },
-  taskScrollContainer: {
-    maxHeight: 400, // Fixed height for scrollable area
-  },
-  taskListContainer: {
-    width: '100%',
-  },
-  taskGridContainer: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    justifyContent: 'space-between',
-    paddingHorizontal: 20,
-    marginTop: 8,
+    marginBottom: 16,
     gap: 12,
   },
-  taskCard: {
-    width: '100%',
-    marginBottom: 14,
-    borderRadius: 16,
-    backgroundColor: 'transparent',
-    minHeight: 72,
-    justifyContent: 'center',
-    shadowColor: '#000',
-    shadowOpacity: 0.08,
-    shadowRadius: 8,
-    shadowOffset: { width: 0, height: 2 },
-    elevation: 2,
+  heroGreeting: {
+    fontFamily: FONT_SERIF,
+    fontSize: 22,
+    fontWeight: '600',
   },
-  taskCardInner: {
-    backgroundColor: LT.surfaceElevated,
-    borderRadius: 16,
-    paddingVertical: 10,
-    paddingHorizontal: 16,
-    shadowColor: '#000',
-    shadowOpacity: 0.08,
-    shadowRadius: 8,
-    shadowOffset: { width: 0, height: 2 },
-    elevation: 2,
-  },
-  taskRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  taskIcon: {
-    backgroundColor: LT.amber,
-    marginRight: 14,
-  },
-  taskTextContainer: {
-    flex: 1,
-    justifyContent: 'center',
-  },
-  taskTitle: {
-    fontSize: 15,
-    color: LT.parchment,
-    fontWeight: 'bold',
-  },
-  taskTime: {
-    fontSize: 13,
-    color: LT.parchmentMuted,
-    marginTop: 2,
-  },
-  activitiesContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
+  heroSub: {
+    fontSize: 14,
     marginTop: 4,
+    fontFamily: FONT_SERIF,
   },
-  activityEmoji: {
-    fontSize: 16,
-    marginRight: 4,
+  dailyXpPill: {
+    borderWidth: 1,
+    borderRadius: 20,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    alignSelf: 'flex-start',
   },
-  activityMore: {
-    fontSize: 12,
-    color: LT.parchmentMuted,
-    fontWeight: 'bold',
+  dailyXpPillText: {
+    fontSize: 13,
+    fontWeight: '700',
+    fontFamily: FONT_SERIF,
   },
-  taskCheckCircle: {
-    width: 24,
-    height: 24,
+  statGrid: {
+    flexDirection: 'row',
+    paddingHorizontal: 16,
+    gap: 8,
+    marginBottom: 16,
+  },
+  statCell: {
+    flex: 1,
+    minWidth: 0,
     borderRadius: 12,
-    borderWidth: 2,
-    borderColor: LT.outline,
-    backgroundColor: LT.surfaceElevated,
-    marginLeft: 12,
+    borderWidth: 1,
+    paddingVertical: 10,
+    paddingHorizontal: 4,
+    alignItems: 'center',
   },
-  noTasks: {
-    color: LT.parchmentMuted,
-    fontSize: 16,
+  statCellValue: {
+    fontFamily: FONT_SERIF,
+    fontSize: 15,
+    fontWeight: '700',
+  },
+  statCellLabel: {
+    fontSize: 11,
+    marginTop: 4,
+    fontFamily: FONT_SERIF,
+  },
+  sectionCard: {
+    marginHorizontal: 16,
+    marginBottom: 12,
+    borderRadius: 12,
+    borderWidth: 1,
+    padding: 16,
+  },
+  sectionHeading: {
+    fontFamily: FONT_SERIF,
+    fontSize: 17,
+    fontWeight: '600',
+    marginBottom: 12,
+  },
+  sectionScroll: {
+    maxHeight: SECTION_SCROLL_MAX_HEIGHT,
+  },
+  sectionScrollContent: {
+    paddingBottom: 8,
+  },
+  mutedCenter: {
     textAlign: 'center',
-    width: '100%',
-    marginTop: 24,
+    fontSize: 14,
+    fontFamily: FONT_SERIF,
+    paddingVertical: 8,
+  },
+  questRow: {
+    marginBottom: 14,
+  },
+  questTop: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  questTitle: {
+    flex: 1,
+    fontFamily: FONT_SERIF,
+    fontSize: 15,
+  },
+  questRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  tierPill: {
+    borderWidth: 1,
+    borderRadius: 8,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+  },
+  tierPillText: {
+    fontSize: 11,
+    fontWeight: '700',
+    fontFamily: FONT_SERIF,
+  },
+  questPct: {
+    fontSize: 14,
+    fontWeight: '700',
+    fontFamily: FONT_SERIF,
+    minWidth: 36,
+    textAlign: 'right',
+  },
+  questBar: {
+    marginTop: 8,
+    height: 8,
+    borderRadius: 4,
+  },
+  todayRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    paddingVertical: 10,
+  },
+  todayDivider: {
+    borderTopWidth: 1,
+    paddingTop: 10,
+  },
+  todayTextCol: {
+    flex: 1,
+    marginLeft: 4,
+    paddingVertical: 2,
+  },
+  todayTitle: {
+    fontSize: 15,
+    fontFamily: FONT_SERIF,
+  },
+  todayTitleDone: {
+    textDecorationLine: 'line-through',
+  },
+  todayMeta: {
+    fontSize: 12,
+    marginTop: 4,
+    fontFamily: FONT_SERIF,
+  },
+  focusHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 10,
+  },
+  focusRatio: {
+    fontSize: 14,
+    fontFamily: FONT_SERIF,
+  },
+  focusBar: {
+    height: 10,
+    borderRadius: 5,
+  },
+  focusHint: {
+    marginTop: 8,
+    fontSize: 13,
+    fontFamily: FONT_SERIF,
   },
   modalContainer: {
-    backgroundColor: LT.surfaceElevated,
     margin: 20,
     borderRadius: 16,
     padding: 0,
@@ -882,7 +1069,6 @@ const styles = StyleSheet.create({
   modalActivitiesTitle: {
     fontSize: 14,
     fontWeight: 'bold',
-    color: LT.parchment,
     marginBottom: 8,
   },
   modalActivitiesList: {
@@ -893,7 +1079,6 @@ const styles = StyleSheet.create({
   modalActivityItem: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: LT.surface,
     borderRadius: 12,
     paddingHorizontal: 8,
     paddingVertical: 4,
@@ -904,95 +1089,12 @@ const styles = StyleSheet.create({
   },
   modalActivityLabel: {
     fontSize: 12,
-    color: LT.parchmentMuted,
-  },
-  priorityDot: {
-    fontSize: 18,
-    marginRight: 6,
-    marginTop: 1,
-  },
-  headerActions: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  streakCard: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: LT.surfaceElevated,
-    borderRadius: 16,
-    paddingVertical: 8,
-    paddingHorizontal: 16,
-    marginRight: 12,
-    shadowColor: '#FFA726',
-    shadowOpacity: 0.12,
-    shadowRadius: 8,
-    shadowOffset: { width: 0, height: 2 },
-    elevation: 2,
-    minWidth: 80,
-    justifyContent: 'center',
-  },
-  streakCardGlow: {
-    backgroundColor: 'rgba(239, 159, 39, 0.12)',
-  },
-  streakCardFailed: {
-    backgroundColor: 'rgba(207, 102, 121, 0.15)',
-    shadowColor: '#F44336',
-  },
-  streakFire: {
-    fontSize: 28,
-    textShadowColor: 'transparent',
-    textShadowRadius: 0,
-    textShadowOffset: { width: 0, height: 0 },
-  },
-  streakFireGlow: {
-    textShadowColor: '#FFA726',
-    textShadowRadius: 16,
-    textShadowOffset: { width: 0, height: 0 },
-  },
-  streakFireFailed: {
-    textShadowColor: '#F44336',
-    textShadowRadius: 8,
-    textShadowOffset: { width: 0, height: 0 },
-  },
-  streakValue: {
-    fontSize: 20,
-    fontWeight: 'bold',
-    color: LT.amber,
-  },
-  streakLabel: {
-    fontSize: 14,
-    color: LT.parchmentMuted,
-    fontWeight: 'bold',
-  },
-  streakSubtext: {
-    fontSize: 12,
-    color: LT.parchmentMuted,
-    fontWeight: 'bold',
   },
   chatFab: {
     position: 'absolute',
     right: 24,
-    bottom: BOTTOM_NAV_TOTAL_HEIGHT + 20, // Position above BottomNavBar with spacing
-    backgroundColor: LT.amber,
+    bottom: BOTTOM_NAV_TOTAL_HEIGHT + 20,
     zIndex: 200,
     elevation: 6,
-  },
-  noTasksContainer: {
-    flexDirection: 'column',
-    alignItems: 'center',
-    justifyContent: 'center',
-    padding: 20,
-  },
-  noTasksSubtext: {
-    color: LT.parchmentMuted,
-    fontSize: 14,
-    marginTop: 8,
-  },
-  streakContent: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  streakTextContainer: {
-    marginLeft: 8,
   },
 }); 

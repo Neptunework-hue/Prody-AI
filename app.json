@@ -6,18 +6,20 @@
     "scheme": "acme",
     "orientation": "portrait",
     "userInterfaceStyle": "dark",
-    "owner": "neptune249",
     "assetBundlePatterns": ["**/*"],
     "plugins": [
       "expo-router",
       "expo-notifications",
-      "@react-native-community/datetimepicker"
+      "@react-native-community/datetimepicker",
+      [
+        "expo-av",
+        {
+          "microphonePermission": "Allow ProdyAI to use the microphone for AI Oracle voice input."
+        }
+      ]
     ],
     "extra": {
-      "router": {},
-      "eas": {
-        "projectId": "3a8f1351-c043-4cba-be68-8dc80b6df797"
-      }
+      "router": {}
     },
     "ios": {
       "supportsTablet": true,

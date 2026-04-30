@@ -154,36 +154,15 @@ export const useAuth = () => {
       // Wait a moment to ensure the auth user is fully created
       await new Promise(resolve => setTimeout(resolve, 1000));
 
-      // Create a profile record using service role client
-      const { error: profileError } = await supabase
-        .from('profiles')
-        .insert([
-          {
-            id: user.id,
-            email: email,
-            username: username,
-          },
-        ])
-        .select();
+      // Create profile via RPC (bypasses RLS safely)
+      const { error: profileError } = await supabase.rpc('create_profile', {
+        user_id: user.id,
+        user_email: email,
+        user_username: username,
+      });
 
       if (profileError) {
-        console.error('Error creating profile:', profileError);
-        // If we get an RLS error, try to create the profile using a different approach
-        if (profileError.code === '42501') {
-          console.log('RLS error, trying alternative profile creation');
-          const { error: altProfileError } = await supabase.rpc('create_profile', {
-            user_id: user.id,
-            user_email: email,
-            user_username: username
-          });
-
-          if (altProfileError) {
-            console.error('Error creating profile via RPC:', altProfileError);
-            return { error: altProfileError };
-          }
-          console.log('Profile created successfully via RPC');
-          return { error: null };
-        }
+        console.warn('Error creating profile via RPC:', profileError);
         return { error: profileError };
       }
 
