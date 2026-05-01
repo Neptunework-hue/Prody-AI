@@ -1,0 +1,32 @@
+{
+  "expo": {
+    "name": "ProdyAI",
+    "slug": "prodyai",
+    "version": "1.0.0",
+    "scheme": "acme",
+    "orientation": "portrait",
+    "userInterfaceStyle": "dark",
+    "assetBundlePatterns": ["**/*"],
+    "plugins": [
+      "expo-router",
+      "expo-notifications",
+      "@react-native-community/datetimepicker",
+      [
+        "expo-av",
+        {
+          "microphonePermission": "Allow ProdyAI to use the microphone for AI Oracle voice input."
+        }
+      ]
+    ],
+    "extra": {
+      "router": {}
+    },
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.masoom1970.ProdyAI"
+    },
+    "android": {
+      "package": "com.masoom1970.ProdyAI"
+    }
+  }
+}
