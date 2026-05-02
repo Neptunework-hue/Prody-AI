@@ -311,7 +311,7 @@ const TaskForm: React.FC<TaskFormProps> = ({ task, folders = [], onRemoveFolder,
             <DateTimePicker
               value={notifyTime || startTime}
               mode="time"
-              display="default"
+              display={Platform.OS === 'ios' ? 'spinner' : 'default'}
               onChange={(_e, selectedDate) => {
                 setShowNotifyTimePicker(false);
                 if (selectedDate) setNotifyTime(selectedDate);
@@ -359,7 +359,7 @@ const TaskForm: React.FC<TaskFormProps> = ({ task, folders = [], onRemoveFolder,
         <DateTimePicker
           value={deadline || new Date()}
           mode="date"
-          display="default"
+          display={Platform.OS === 'ios' ? 'spinner' : 'default'}
           onChange={handleDateChange}
           minimumDate={new Date()}
         />
@@ -369,7 +369,7 @@ const TaskForm: React.FC<TaskFormProps> = ({ task, folders = [], onRemoveFolder,
         <DateTimePicker
           value={startTime || new Date()}
           mode="time"
-          display="default"
+          display={Platform.OS === 'ios' ? 'spinner' : 'default'}
           onChange={(_e, selectedDate) => {
             setShowStartTimePicker(false);
             if (selectedDate) setStartTime(selectedDate);
@@ -381,7 +381,7 @@ const TaskForm: React.FC<TaskFormProps> = ({ task, folders = [], onRemoveFolder,
         <DateTimePicker
           value={endTime || new Date()}
           mode="time"
-          display="default"
+          display={Platform.OS === 'ios' ? 'spinner' : 'default'}
           onChange={(_e, selectedDate) => {
             setShowEndTimePicker(false);
             if (selectedDate) setEndTime(selectedDate);
