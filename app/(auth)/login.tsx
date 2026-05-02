@@ -37,6 +37,16 @@ export default function Login() {
       style={styles.screen}
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
     >
+      {/* Background decoration */}
+      <View style={styles.glowOne} />
+      <View style={styles.glowTwo} />
+      <View style={styles.glowThree} />
+
+      <Text style={[styles.star, styles.starOne]}>✦</Text>
+      <Text style={[styles.star, styles.starTwo]}>✧</Text>
+      <Text style={[styles.star, styles.starThree]}>✦</Text>
+      <Text style={[styles.star, styles.starFour]}>✧</Text>
+
       <View style={styles.card}>
         <View style={styles.logoCircle}>
           <Text style={styles.logoText}>✦</Text>
@@ -55,7 +65,7 @@ export default function Login() {
           keyboardType="email-address"
           mode="outlined"
           style={styles.input}
-          outlineColor="#3a3548"
+          outlineColor="#51486b"
           activeOutlineColor="#f5a623"
           textColor="#f4ead8"
           theme={{
@@ -73,7 +83,7 @@ export default function Login() {
           secureTextEntry
           mode="outlined"
           style={styles.input}
-          outlineColor="#3a3548"
+          outlineColor="#51486b"
           activeOutlineColor="#f5a623"
           textColor="#f4ead8"
           theme={{
@@ -124,24 +134,80 @@ export default function Login() {
 const styles = StyleSheet.create({
   screen: {
     flex: 1,
-    backgroundColor: '#0f0d14',
+    backgroundColor: '#090712',
     justifyContent: 'center',
     alignItems: 'center',
     padding: 24,
+    overflow: 'hidden',
   },
+
+  glowOne: {
+    position: 'absolute',
+    width: 360,
+    height: 360,
+    borderRadius: 180,
+    backgroundColor: 'rgba(245, 166, 35, 0.14)',
+    top: -90,
+    left: -120,
+  },
+  glowTwo: {
+    position: 'absolute',
+    width: 420,
+    height: 420,
+    borderRadius: 210,
+    backgroundColor: 'rgba(112, 72, 232, 0.20)',
+    bottom: -150,
+    right: -130,
+  },
+  glowThree: {
+    position: 'absolute',
+    width: 260,
+    height: 260,
+    borderRadius: 130,
+    backgroundColor: 'rgba(245, 166, 35, 0.08)',
+    top: '45%',
+    right: -90,
+  },
+
+  star: {
+    position: 'absolute',
+    color: '#f5a623',
+    opacity: 0.8,
+  },
+  starOne: {
+    top: 90,
+    left: 48,
+    fontSize: 16,
+  },
+  starTwo: {
+    top: 170,
+    right: 70,
+    fontSize: 12,
+  },
+  starThree: {
+    bottom: 120,
+    left: 82,
+    fontSize: 14,
+  },
+  starFour: {
+    bottom: 210,
+    right: 44,
+    fontSize: 18,
+  },
+
   card: {
     width: '100%',
     maxWidth: 430,
-    backgroundColor: '#17151f',
+    backgroundColor: 'rgba(23, 21, 31, 0.94)',
     borderRadius: 28,
     padding: 26,
     borderWidth: 1,
-    borderColor: '#3a3548',
-    shadowColor: '#000',
-    shadowOpacity: 0.35,
-    shadowRadius: 18,
-    shadowOffset: { width: 0, height: 8 },
-    elevation: 8,
+    borderColor: '#5c5278',
+    shadowColor: '#f5a623',
+    shadowOpacity: 0.22,
+    shadowRadius: 22,
+    shadowOffset: { width: 0, height: 10 },
+    elevation: 10,
   },
   logoCircle: {
     width: 72,
@@ -149,11 +215,15 @@ const styles = StyleSheet.create({
     borderRadius: 36,
     alignSelf: 'center',
     backgroundColor: '#241b14',
-    borderWidth: 1,
+    borderWidth: 1.5,
     borderColor: '#f5a623',
     justifyContent: 'center',
     alignItems: 'center',
     marginBottom: 18,
+    shadowColor: '#f5a623',
+    shadowOpacity: 0.55,
+    shadowRadius: 18,
+    elevation: 8,
   },
   logoText: {
     color: '#f5a623',
@@ -185,6 +255,10 @@ const styles = StyleSheet.create({
     borderRadius: 18,
     paddingVertical: 6,
     marginTop: 8,
+    shadowColor: '#f5a623',
+    shadowOpacity: 0.4,
+    shadowRadius: 12,
+    elevation: 5,
   },
   loginLabel: {
     fontSize: 16,

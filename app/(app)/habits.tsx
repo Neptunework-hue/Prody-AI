@@ -154,10 +154,10 @@ export default function HabitsScreen() {
         sound: true,
       },
       trigger: {
-        hour: notifyDate.getHours(),
-        minute: notifyDate.getMinutes(),
-        repeats: true,
-      } as any,
+      type: 'daily',
+      hour: notifyDate.getHours(),
+      minute: notifyDate.getMinutes(),
+    } as any,
     });
     return notificationId;
   }
@@ -165,17 +165,17 @@ export default function HabitsScreen() {
   const handleSave = async () => {
     if (!user) return;
     if (!form.title) return;
-    let notificationId: string | undefined;
+    let notificationId: string | null = null;
     try {
       if (form.notifyTime) {
-        notificationId = await scheduleHabitNotification({
+        notificationId = (await scheduleHabitNotification({
           ...form,
           title: form.title,
           description: form.description,
           notifyTime: form.notifyTime,
-        });
+        })) ?? null ;
       }
-      const habitData = {
+      const habitData: any  = {
         user_id: user.id,
         title: form.title,
         description: form.description,
@@ -184,8 +184,10 @@ export default function HabitsScreen() {
         streak: 0,
         history: [],
         days: form.frequency === 'daily' ? [0, 1, 2, 3, 4, 5, 6] : form.days,
-        notify_time: form.notifyTime ?? null,
-        notification_id: notificationId ?? null,
+        notify_time: form.notifyTime
+      ? new Date(form.notifyTime).toTimeString().slice(0, 8)
+      : null,
+        notification_id: notificationId,
       };
       const created = await habitService.addHabit(habitData);
       if (form.folderId) {
