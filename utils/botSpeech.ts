@@ -1,43 +1,131 @@
 import { Platform } from 'react-native';
 import * as Speech from 'expo-speech';
-import type { SpeechOptions } from 'expo-speech';
-import { VoiceQuality } from 'expo-speech';
+import { Audio } from 'expo-av';
+import { getOpenAIKey } from '../services/openai/openaiClient';
 
-let cachedVoiceIdentifier: string | undefined | null = null;
+let currentSound: Audio.Sound | null = null;
 
-/**
- * Pick a high-quality English voice once (Enhanced on iOS when available).
- */
+const FALLBACK_RATE = Platform.OS === 'ios' ? 0.82 : 0.85;
+const FALLBACK_PITCH = 1.0;
+
 export async function preloadBotVoice(): Promise<void> {
-  if (cachedVoiceIdentifier !== null) return;
-  cachedVoiceIdentifier = undefined;
-  try {
-    const voices = await Speech.getAvailableVoicesAsync();
-    const english = voices.filter((v) => /^en(-|$)/i.test(v.language));
-    const enhanced = english.find((v) => v.quality === VoiceQuality.Enhanced);
-    const named =
-      english.find((v) => /samantha|allison|ava|aaron|nicky|siri|google|natural/i.test(v.name)) ??
-      english[0];
-    cachedVoiceIdentifier = enhanced?.identifier ?? named?.identifier;
-  } catch {
-    cachedVoiceIdentifier = undefined;
+  // Kept for compatibility with existing chat.tsx
+  return;
+}
+
+async function stopCurrentSound() {
+  if (currentSound) {
+    try {
+      await currentSound.stopAsync();
+      await currentSound.unloadAsync();
+    } catch {
+      // ignore
+    }
+    currentSound = null;
   }
 }
 
-/** Slightly relaxed from default — closer to natural speech without sounding rushed. */
-const TTS_RATE = Platform.OS === 'ios' ? 0.98 : 0.97;
-const TTS_PITCH = 1.0;
-
-export function getBotSpeechOptions(overrides?: SpeechOptions): SpeechOptions {
-  return {
+function fallbackSpeak(text: string) {
+  Speech.speak(text, {
     language: 'en-US',
-    pitch: TTS_PITCH,
-    rate: TTS_RATE,
-    ...overrides,
-    ...(cachedVoiceIdentifier ? { voice: cachedVoiceIdentifier } : {}),
-  };
+    rate: FALLBACK_RATE,
+    pitch: FALLBACK_PITCH,
+  });
 }
 
-export function speakBot(text: string, overrides?: SpeechOptions): void {
-  Speech.speak(text, getBotSpeechOptions(overrides));
+type SpeakBotCallbacks = {
+  onDone?: () => void;
+  onStopped?: () => void;
+  onError?: () => void;
+};
+
+export async function speakBot(
+  text: string,
+  callbacks?: SpeakBotCallbacks
+): Promise<void> {
+  const apiKey = getOpenAIKey();
+
+  Speech.stop();
+  await stopCurrentSound();
+
+  if (!apiKey) {
+    Speech.speak(text, {
+      language: 'en-US',
+      rate: FALLBACK_RATE,
+      pitch: FALLBACK_PITCH,
+      onDone: callbacks?.onDone,
+      onStopped: callbacks?.onStopped,
+      onError: callbacks?.onError,
+    });
+    return;
+  }
+
+  try {
+    const response = await fetch('https://api.openai.com/v1/audio/speech', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: 'gpt-4o-mini-tts',
+        voice: 'alloy',
+        input: text,
+        format: 'mp3',
+      }),
+    });
+
+    if (!response.ok) {
+      callbacks?.onError?.();
+      return;
+    }
+
+    const audioBlob = await response.blob();
+    const reader = new FileReader();
+
+    reader.onloadend = async () => {
+      try {
+        const base64Audio = reader.result as string;
+
+        const { sound } = await Audio.Sound.createAsync({
+          uri: base64Audio,
+        });
+
+        currentSound = sound;
+
+        sound.setOnPlaybackStatusUpdate((status) => {
+          if (!status.isLoaded) return;
+
+          if (status.didJustFinish) {
+            callbacks?.onDone?.();
+
+            sound.unloadAsync().catch(() => {});
+
+            if (currentSound === sound) {
+              currentSound = null;
+            }
+          }
+        });
+
+        await sound.playAsync();
+      } catch (error) {
+        console.error('Playback error:', error);
+        callbacks?.onError?.();
+      }
+    };
+
+    reader.onerror = () => {
+      callbacks?.onError?.();
+    };
+
+    reader.readAsDataURL(audioBlob);
+  } catch (error) {
+    console.error('TTS error:', error);
+    callbacks?.onError?.();
+  }
+}
+
+export async function stopBotSpeech(): Promise<void> {
+  Speech.stop();
+  await stopCurrentSound();
 }

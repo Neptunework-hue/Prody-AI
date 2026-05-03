@@ -101,19 +101,18 @@ export default function BottomNavBar() {
               activeOpacity={0.85}
               onPress={() => {
                 tap();
-                router.push(`/(app)/${item.route}`);
+                router.replace(`/(app)/${item.route}`);
               }}
             >
               {isActive ? <View style={styles.activeTopBar} /> : null}
+
               <IconButton
                 icon={item.icon}
                 size={22}
                 iconColor={isActive ? c.amber : c.navInactive}
                 style={styles.iconBtn}
-                onPress={() => {
-                router.push(`/(app)/${item.route}`);
-              }}
               />
+
               <Text
                 style={[styles.label, { color: isActive ? c.amber : c.navInactive }]}
                 numberOfLines={1}
