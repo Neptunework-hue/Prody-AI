@@ -76,7 +76,7 @@ const CalendarScreen = () => {
     if (!dateString) {
       throw new Error('Date string is empty or undefined');
     }
-    
+
     if (dateString.includes('T')) {
       // ISO string format (old format)
       return new Date(dateString);
@@ -307,13 +307,13 @@ const CalendarScreen = () => {
     const firstDay = new Date(year, month, 1);
     const lastDay = new Date(year, month + 1, 0);
     const days = [];
-    
+
     // Add empty days for the first week if needed
     const firstDayOfWeek = firstDay.getDay();
     for (let i = 0; i < firstDayOfWeek; i++) {
       days.push(<View key={`empty-${i}`} style={styles.calendarDay} />);
     }
-    
+
     for (let i = 1; i <= lastDay.getDate(); i++) {
       const date = new Date(year, month, i);
       const key = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
@@ -388,7 +388,7 @@ const CalendarScreen = () => {
           </View>
         }
       />
-      
+
       {view === 'calendar' ? (
         <>
           <View style={styles.monthRow}>
@@ -412,25 +412,17 @@ const CalendarScreen = () => {
           </View>
 
           <View style={styles.calendarControls}>
-            <Button
-              mode="outlined"
-              onPress={goToToday}
-              style={[styles.todayButton, { borderColor: c.amber }]}
-              textColor={c.amber}
-              labelStyle={{ fontFamily: FONT_SERIF }}
-            >
-              Today
-            </Button>
+          
           </View>
-          
+
           {renderCalendarGrid()}
-          
+
           <View style={styles.selectedDateBar}>
             <Text style={styles.selectedDateText}>
               {selectedDate.toLocaleDateString(undefined, { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}
             </Text>
           </View>
-          
+
           <ScrollView
             style={styles.eventsList}
             contentContainerStyle={{ paddingBottom: BOTTOM_NAV_TOTAL_HEIGHT + 20 }}
@@ -557,7 +549,7 @@ const CalendarScreen = () => {
           )}
         </ScrollView>
       )}
-      
+
       {/* Task Detail Modal */}
       <Portal>
         <Modal visible={showTaskModal} onDismiss={() => setShowTaskModal(false)} contentContainerStyle={styles.modalContainer}>
@@ -603,41 +595,56 @@ const CalendarScreen = () => {
                   </View>
                 )}
               </Card.Content>
-              <Card.Actions>
+              <Card.Actions style={styles.modalActions}>
                 <Button
                   mode="contained"
                   onPress={() => handleTaskStatus(selectedTask, 'completed')}
                   buttonColor={c.teal}
                   textColor={c.onAccent}
-                  style={{ marginRight: 8 }}
+                  style={styles.modalActionButton}
+                  labelStyle={styles.modalActionLabel}
                 >
                   Completed
                 </Button>
+
                 <Button
                   mode="contained"
                   onPress={() => handleTaskStatus(selectedTask, 'failed')}
                   buttonColor="#cf6679"
                   textColor="#ffffff"
+                  style={styles.modalActionButton}
+                  labelStyle={styles.modalActionLabel}
                 >
                   Failed
                 </Button>
+
                 <Button
                   mode="outlined"
                   textColor="#cf6679"
                   onPress={() => handleDeleteTask(selectedTask)}
-                  style={{ marginRight: 8 }}
+                  style={styles.modalActionButton}
+                  labelStyle={styles.modalActionLabel}
                 >
                   Delete
                 </Button>
-                <Button textColor={c.tx2} onPress={() => setShowTaskModal(false)}>
+
+                {/*
+                <Button
+                  mode="outlined"
+                  textColor={c.tx2}
+                  onPress={() => setShowTaskModal(false)}
+                  style={styles.modalActionButton}
+                  labelStyle={styles.modalActionLabel}
+                >
                   Close
                 </Button>
+                */}
               </Card.Actions>
             </Card>
           )}
         </Modal>
       </Portal>
-      
+
       <BottomNavBar />
       <Sidebar isVisible={sidebarVisible} onClose={() => setSidebarVisible(false)} />
     </View>
@@ -646,296 +653,320 @@ const CalendarScreen = () => {
 
 function createCalendarStyles(c: ThemeColors) {
   return StyleSheet.create({
-  monthRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-  },
-  navButton: {
-    padding: 4,
-  },
-  monthSelector: {
-    padding: 8,
-  },
-  monthText: {
-    fontFamily: FONT_SERIF,
-    fontSize: 18,
-    fontWeight: '600',
-    color: c.tx,
-  },
-  calendarControls: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'flex-start',
-    paddingHorizontal: 12,
-    paddingBottom: 8,
-  },
-  todayButton: {
-    paddingVertical: 4,
-  },
-  calendarGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    justifyContent: 'flex-start',
-    paddingHorizontal: 12,
-    marginBottom: 8,
-  },
-  calendarDay: {
-    width: 36,
-    height: 48,
-    alignItems: 'center',
-    justifyContent: 'center',
-    margin: 2,
-    borderRadius: 10,
-    backgroundColor: c.surf,
-    borderWidth: 1,
-    borderColor: c.borderDefault,
-  },
-  calendarDaySelected: {
-    backgroundColor: c.amber,
-    borderWidth: 2,
-    borderColor: c.amber,
-  },
-  calendarDayToday: {
-    backgroundColor: c.amberBg,
-    borderWidth: 2,
-    borderColor: c.amberBorder,
-  },
-  calendarDayText: {
-    fontFamily: FONT_SERIF,
-    fontSize: 15,
-    fontWeight: '600',
-    color: c.tx,
-  },
-  calendarDayTextSelected: {
-    color: c.chipSelectedFg,
-  },
-  calendarDayTextToday: {
-    color: c.amber,
-    fontWeight: '700',
-  },
-  calendarDotsRow: {
-    flexDirection: 'row',
-    marginTop: 2,
-    alignItems: 'center',
-  },
-  calendarMoreTasks: {
-    fontSize: 10,
-    fontWeight: '700',
-    color: c.tx2,
-    marginLeft: 2,
-  },
-  selectedDateBar: {
-    backgroundColor: c.bg2,
-    padding: 12,
-    borderTopLeftRadius: 12,
-    borderTopRightRadius: 12,
-    marginTop: 8,
-    marginHorizontal: 12,
-    borderWidth: 1,
-    borderColor: c.borderDefault,
-  },
-  selectedDateText: {
-    fontFamily: FONT_SERIF,
-    color: c.tx,
-    fontSize: 15,
-    fontWeight: '600',
-  },
-  eventsList: {
-    flex: 1,
-    paddingHorizontal: 16,
-    marginTop: 8,
-    backgroundColor: c.bg,
-  },
-  eventCard: {
-    marginBottom: 12,
-    borderRadius: 12,
-    backgroundColor: c.surf,
-    borderLeftWidth: 4,
-    borderWidth: 1,
-    borderColor: c.borderDefault,
-  },
-  eventPriorityDot: {
-    width: 12,
-    height: 12,
-    borderRadius: 6,
-    marginRight: 10,
-  },
-  eventTitle: {
-    fontFamily: FONT_SERIF,
-    fontSize: 16,
-    fontWeight: '600',
-    color: c.tx,
-  },
-  eventTime: {
-    fontSize: 13,
-    color: c.tx2,
-    marginTop: 2,
-    fontFamily: FONT_SERIF,
-  },
-  eventDescription: {
-    fontSize: 12,
-    color: c.tx2,
-    marginTop: 2,
-    fontFamily: FONT_SERIF,
-  },
-  noEvents: {
-    color: c.tx2,
-    fontSize: 15,
-    textAlign: 'center',
-    marginTop: 24,
-    fontFamily: FONT_SERIF,
-  },
-  listViewHint: {
-    fontFamily: FONT_SERIF,
-    fontSize: 13,
-    color: c.tx2,
-    marginBottom: 16,
-    lineHeight: 20,
-  },
-  dayBulletSection: {
-    marginBottom: 20,
-  },
-  dayBulletSectionTitle: {
-    fontFamily: FONT_SERIF,
-    fontSize: 16,
-    fontWeight: '700',
-    color: c.amber,
-    marginBottom: 10,
-    borderBottomWidth: 1,
-    borderBottomColor: c.borderDefault,
-    paddingBottom: 6,
-  },
-  bulletRow: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    marginBottom: 8,
-    paddingRight: 8,
-  },
-  bulletChar: {
-    fontSize: 18,
-    color: c.tx,
-    marginRight: 8,
-    lineHeight: 22,
-    width: 14,
-  },
-  bulletTextCol: {
-    flex: 1,
-    minWidth: 0,
-  },
-  bulletTitle: {
-    fontFamily: FONT_SERIF,
-    fontSize: 15,
-    color: c.tx,
-    fontWeight: '600',
-  },
-  bulletMeta: {
-    fontFamily: FONT_SERIF,
-    fontSize: 12,
-    color: c.tx2,
-    marginTop: 2,
-  },
-  bulletRowNested: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    marginBottom: 6,
-    marginLeft: 22,
-  },
-  bulletCharNested: {
-    fontSize: 16,
-    color: c.tx2,
-    marginRight: 6,
-    lineHeight: 20,
-  },
-  bulletTitleNested: {
-    fontFamily: FONT_SERIF,
-    fontSize: 14,
-    color: c.tx2,
-    flex: 1,
-  },
-  bulletHabitTag: {
-    fontFamily: FONT_SERIF,
-    fontSize: 13,
-    fontWeight: '400',
-    color: c.tx2,
-  },
-  habitsBlock: {
-    marginTop: 16,
-  },
-  habitsBlockTitle: {
-    fontFamily: FONT_SERIF,
-    fontWeight: '600',
-    fontSize: 17,
-    marginBottom: 8,
-    color: c.tx,
-  },
-  habitCard: {
-    marginBottom: 8,
-    borderRadius: 12,
-    backgroundColor: c.surf,
-    borderWidth: 1,
-    borderColor: c.borderDefault,
-  },
-  habitCardContent: {
-    paddingVertical: 4,
-  },
-  habitTitle: {
-    fontFamily: FONT_SERIF,
-    fontWeight: '600',
-    fontSize: 15,
-    color: c.tx,
-  },
-  modalContainer: {
-    backgroundColor: c.surfaceElevated,
-    margin: 20,
-    borderRadius: 16,
-    padding: 0,
-    maxHeight: '80%',
-  },
-  detailCard: {
-    backgroundColor: c.surfaceElevated,
-    borderRadius: 16,
-  },
-  modalBody: {
-    color: c.tx,
-    marginBottom: 8,
-    fontFamily: FONT_SERIF,
-  },
-  modalActivitiesContainer: {
-    marginTop: 12,
-  },
-  modalActivitiesTitle: {
-    fontSize: 15,
-    fontWeight: '600',
-    color: c.tx,
-    marginBottom: 8,
-    fontFamily: FONT_SERIF,
-  },
-  modalActivitiesList: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
-  },
-  modalActivityItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: c.surface,
-    borderRadius: 12,
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-  },
-  modalActivityEmoji: {
-    fontSize: 16,
-    marginRight: 4,
-  },
-  modalActivityLabel: {
-    fontSize: 12,
-    color: c.tx2,
-    fontFamily: FONT_SERIF,
-  },
-});
+    monthRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      paddingHorizontal: 8,
+      paddingVertical: 4,
+    },
+    navButton: {
+      padding: 4,
+    },
+    monthSelector: {
+      padding: 8,
+    },
+    monthText: {
+      fontFamily: FONT_SERIF,
+      fontSize: 18,
+      fontWeight: '600',
+      color: c.tx,
+    },
+    calendarControls: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'flex-start',
+      paddingHorizontal: 12,
+      paddingBottom: 8,
+    },
+    todayButton: {
+      paddingVertical: 4,
+    },
+    calendarGrid: {
+      flexDirection: 'row',
+      flexWrap: 'wrap',
+      justifyContent: 'flex-start',
+      paddingHorizontal: 12,
+      marginBottom: 8,
+    },
+    calendarDay: {
+      width: 36,
+      height: 48,
+      alignItems: 'center',
+      justifyContent: 'center',
+      margin: 2,
+      borderRadius: 10,
+      backgroundColor: c.surf,
+      borderWidth: 1,
+      borderColor: c.borderDefault,
+    },
+    calendarDaySelected: {
+      backgroundColor: c.amber,
+      borderWidth: 2,
+      borderColor: c.amber,
+    },
+    calendarDayToday: {
+      backgroundColor: c.amberBg,
+      borderWidth: 2,
+      borderColor: c.amberBorder,
+    },
+    calendarDayText: {
+      fontFamily: FONT_SERIF,
+      fontSize: 15,
+      fontWeight: '600',
+      color: c.tx,
+    },
+    calendarDayTextSelected: {
+      color: c.chipSelectedFg,
+    },
+    calendarDayTextToday: {
+      color: c.amber,
+      fontWeight: '700',
+    },
+    calendarDotsRow: {
+      flexDirection: 'row',
+      marginTop: 2,
+      alignItems: 'center',
+    },
+    calendarMoreTasks: {
+      fontSize: 10,
+      fontWeight: '700',
+      color: c.tx2,
+      marginLeft: 2,
+    },
+    selectedDateBar: {
+      backgroundColor: c.bg2,
+      padding: 12,
+      borderTopLeftRadius: 12,
+      borderTopRightRadius: 12,
+      marginTop: 8,
+      marginHorizontal: 12,
+      borderWidth: 1,
+      borderColor: c.borderDefault,
+    },
+    selectedDateText: {
+      fontFamily: FONT_SERIF,
+      color: c.tx,
+      fontSize: 15,
+      fontWeight: '600',
+    },
+    eventsList: {
+      flex: 1,
+      paddingHorizontal: 16,
+      marginTop: 8,
+      backgroundColor: c.bg,
+    },
+    eventCard: {
+      marginBottom: 12,
+      borderRadius: 12,
+      backgroundColor: c.surf,
+      borderLeftWidth: 4,
+      borderWidth: 1,
+      borderColor: c.borderDefault,
+    },
+    eventPriorityDot: {
+      width: 12,
+      height: 12,
+      borderRadius: 6,
+      marginRight: 10,
+    },
+    eventTitle: {
+      fontFamily: FONT_SERIF,
+      fontSize: 16,
+      fontWeight: '600',
+      color: c.tx,
+    },
+    eventTime: {
+      fontSize: 13,
+      color: c.tx2,
+      marginTop: 2,
+      fontFamily: FONT_SERIF,
+    },
+    eventDescription: {
+      fontSize: 12,
+      color: c.tx2,
+      marginTop: 2,
+      fontFamily: FONT_SERIF,
+    },
+    noEvents: {
+      color: c.tx2,
+      fontSize: 15,
+      textAlign: 'center',
+      marginTop: 24,
+      fontFamily: FONT_SERIF,
+    },
+    listViewHint: {
+      fontFamily: FONT_SERIF,
+      fontSize: 13,
+      color: c.tx2,
+      marginBottom: 16,
+      lineHeight: 20,
+    },
+    dayBulletSection: {
+      marginBottom: 20,
+    },
+    dayBulletSectionTitle: {
+      fontFamily: FONT_SERIF,
+      fontSize: 16,
+      fontWeight: '700',
+      color: c.amber,
+      marginBottom: 10,
+      borderBottomWidth: 1,
+      borderBottomColor: c.borderDefault,
+      paddingBottom: 6,
+    },
+    bulletRow: {
+      flexDirection: 'row',
+      alignItems: 'flex-start',
+      marginBottom: 8,
+      paddingRight: 8,
+    },
+    bulletChar: {
+      fontSize: 18,
+      color: c.tx,
+      marginRight: 8,
+      lineHeight: 22,
+      width: 14,
+    },
+    bulletTextCol: {
+      flex: 1,
+      minWidth: 0,
+    },
+    bulletTitle: {
+      fontFamily: FONT_SERIF,
+      fontSize: 15,
+      color: c.tx,
+      fontWeight: '600',
+    },
+    bulletMeta: {
+      fontFamily: FONT_SERIF,
+      fontSize: 12,
+      color: c.tx2,
+      marginTop: 2,
+    },
+    bulletRowNested: {
+      flexDirection: 'row',
+      alignItems: 'flex-start',
+      marginBottom: 6,
+      marginLeft: 22,
+    },
+    bulletCharNested: {
+      fontSize: 16,
+      color: c.tx2,
+      marginRight: 6,
+      lineHeight: 20,
+    },
+    bulletTitleNested: {
+      fontFamily: FONT_SERIF,
+      fontSize: 14,
+      color: c.tx2,
+      flex: 1,
+    },
+    bulletHabitTag: {
+      fontFamily: FONT_SERIF,
+      fontSize: 13,
+      fontWeight: '400',
+      color: c.tx2,
+    },
+    habitsBlock: {
+      marginTop: 16,
+    },
+    habitsBlockTitle: {
+      fontFamily: FONT_SERIF,
+      fontWeight: '600',
+      fontSize: 17,
+      marginBottom: 8,
+      color: c.tx,
+    },
+    habitCard: {
+      marginBottom: 8,
+      borderRadius: 12,
+      backgroundColor: c.surf,
+      borderWidth: 1,
+      borderColor: c.borderDefault,
+    },
+    habitCardContent: {
+      paddingVertical: 4,
+    },
+    habitTitle: {
+      fontFamily: FONT_SERIF,
+      fontWeight: '600',
+      fontSize: 15,
+      color: c.tx,
+    },
+    modalContainer: {
+      backgroundColor: c.surfaceElevated,
+      margin: 20,
+      borderRadius: 16,
+      padding: 0,
+      maxHeight: '80%',
+    },
+    detailCard: {
+      backgroundColor: c.surfaceElevated,
+      borderRadius: 16,
+    },
+    modalBody: {
+      color: c.tx,
+      marginBottom: 8,
+      fontFamily: FONT_SERIF,
+    },
+
+    modalActions: {
+      flexDirection: 'row',
+      justifyContent: 'space-between',
+      alignItems: 'center',
+      paddingHorizontal: 12,
+      paddingBottom: 16,
+      gap: 6,
+    },
+
+    modalActionButton: {
+      flex: 1,
+      minWidth: 0,
+      height: 44,
+      borderRadius: 16,
+      justifyContent: 'center',
+    },
+
+    modalActionLabel: {
+      fontFamily: FONT_SERIF,
+      fontSize: 12,
+      fontWeight: '700',
+    },
+    
+    modalActivitiesContainer: {
+      marginTop: 12,
+    },
+    modalActivitiesTitle: {
+      fontSize: 15,
+      fontWeight: '600',
+      color: c.tx,
+      marginBottom: 8,
+      fontFamily: FONT_SERIF,
+    },
+    modalActivitiesList: {
+      flexDirection: 'row',
+      flexWrap: 'wrap',
+      gap: 8,
+    },
+    modalActivityItem: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      backgroundColor: c.surface,
+      borderRadius: 12,
+      paddingHorizontal: 8,
+      paddingVertical: 4,
+    },
+    modalActivityEmoji: {
+      fontSize: 16,
+      marginRight: 4,
+    },
+    modalActivityLabel: {
+      fontSize: 12,
+      color: c.tx2,
+      fontFamily: FONT_SERIF,
+    },
+  });
 }
 
 export default CalendarScreen; 
