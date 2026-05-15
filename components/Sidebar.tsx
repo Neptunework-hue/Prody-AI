@@ -226,6 +226,11 @@ export default function Sidebar({ isVisible, onClose }: SidebarProps) {
     router.push('/(app)/chat');
   };
 
+  const handleAbout = () => {
+    onClose();
+    router.push('/(app)/about');
+  };
+
   const syncLabel = !isOnline ? 'Offline' : pendingOperationsCount > 0 ? 'Sync pending' : 'Synced';
   const syncColor = !isOnline || pendingOperationsCount > 0 ? c.amber : c.teal;
 
@@ -235,6 +240,7 @@ export default function Sidebar({ isVisible, onClose }: SidebarProps) {
     { icon: 'account-circle-outline' as const, label: 'Profile', onPress: handleProfile, iconColor: c.blue },
     { icon: 'cog-outline' as const, label: 'Settings', onPress: handleSettings, iconColor: SETTINGS_ICON },
     { icon: 'star-four-points' as const, label: 'AI Oracle', onPress: handleChat, iconColor: c.amber },
+    { icon: 'information-outline' as const, label: 'About', onPress: handleAbout, iconColor: c.blue },
   ];
 
   return (
@@ -293,7 +299,7 @@ export default function Sidebar({ isVisible, onClose }: SidebarProps) {
 
         <View style={styles.footer}>
           <Text style={styles.footerText}>
-            QuestLog v2.4{' '}
+            ProdyAI v5.0{' '}
             <Text style={[styles.footerSynced, { color: syncColor }]}>· {syncLabel}</Text>
           </Text>
         </View>

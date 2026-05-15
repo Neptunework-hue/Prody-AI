@@ -24,6 +24,9 @@ import { getLevelProgress } from '../../utils/leveling';
 import { countHabitCompletions, HABIT_DOT_DAY_COUNT } from '../../utils/habitCardHelpers';
 import { Habit } from '../../types/habit';
 import HabitQuestCard from '../../components/habits/HabitQuestCard';
+import { addXP } from '../../utils/xpSystem';
+import XpFlash from '../../components/XpFlash';
+import ConfettiCannon from 'react-native-confetti-cannon';
 
 // Activity mapping for display
 const ACTIVITY_OPTIONS = [
@@ -181,6 +184,8 @@ export default function DashboardScreen() {
   /** Local calendar day for “today” lists; advances at midnight / resume / focus. */
   const [calendarDayKey, setCalendarDayKey] = useState(() => localDateKey(new Date()));
   const [dailyFocusGoalMin, setDailyFocusGoalMin] = useState(DAILY_FOCUS_GOAL_MIN_DEFAULT);
+  const [xpFlash, setXpFlash] = useState<{ amount: number; key: number } | null>(null);
+  const [levelUpKey, setLevelUpKey] = useState<number | null>(null);
 
   const syncCalendarDay = useCallback(() => {
     setCalendarDayKey(localDateKey(new Date()));
@@ -189,7 +194,6 @@ export default function DashboardScreen() {
   // Listen for refresh parameter changes from chat
   useEffect(() => {
     if (params.refresh) {
-      console.log('Dashboard: Refresh parameter detected:', params.refresh);
       fetchTasks();
     }
   }, [params.refresh]);
@@ -197,7 +201,6 @@ export default function DashboardScreen() {
   // Listen for reset parameter changes from profile
   useEffect(() => {
     if (params.reset === 'true') {
-      console.log('Dashboard: Reset parameter detected, refreshing all data');
       setStreak(0);
       setFocusStats({ total_duration: 0 });
       fetchTasks();
@@ -217,19 +220,11 @@ export default function DashboardScreen() {
   // Fetch tasks for today
   const fetchTasks = useCallback(async () => {
     if (!user) return;
-    console.log('Dashboard: fetchTasks called');
     setLoading(true);
     try {
       const allTasks = await offlineTaskService.getTasks(user.id);
-      console.log('Dashboard: All tasks fetched:', allTasks.length, 'tasks');
-      console.log('Dashboard: User ID:', user.id);
-      
       setAllTasksCache(allTasks);
-
-      // All active tasks (not completed/failed) - this is what should be shown in the main task list
       const activeTasks = allTasks.filter(task => task.status !== 'completed' && task.status !== 'failed');
-      console.log('Dashboard: Active tasks:', activeTasks.length);
-      console.log('Dashboard: Task statuses:', activeTasks.map(t => ({ title: t.title, status: t.status, deadline: t.deadline })));
       setAllActiveTasks(activeTasks);
     } catch (e) {
       console.error('Dashboard: Error fetching tasks:', e);
@@ -306,7 +301,6 @@ export default function DashboardScreen() {
   }, [syncCalendarDay, refreshFocusMetrics, fetchTasks, loadDashboardHabits, loadTaskFolders]);
 
   useEffect(() => {
-    console.log('Dashboard: useEffect triggered with refreshFlag:', refreshFlag);
     fetchTasks();
   }, [fetchTasks, refreshFlag]);
 
@@ -413,13 +407,23 @@ export default function DashboardScreen() {
       accentKey: 'amber' | 'teal' | 'blue' | 'pink';
       color: string;
       progress: number;
+      totalTasks: number;
+      completedTasks: number;
+      deadline?: string;
     }[] = [];
+
+    function nearestDeadline(tasks: Task[]): string | undefined {
+      const deadlines = tasks
+        .filter((t) => t.deadline && t.status !== 'completed')
+        .map((t) => t.deadline as string)
+        .sort();
+      return deadlines[0];
+    }
 
     for (const f of taskFolders) {
       const rootsInFolder = roots.filter((t) => taskBelongsToFolder(t, f.id));
       const activeInFolder = rootsInFolder.filter(isQuestActiveTask);
       if (activeInFolder.length === 0) continue;
-      /** Folder quest bar: 0% until roots complete; linear % of roots done (not heuristic per-task progress). */
       const totalRoots = rootsInFolder.length;
       const completedRoots = rootsInFolder.filter((t) => t.status === 'completed').length;
       const progress =
@@ -433,6 +437,9 @@ export default function DashboardScreen() {
         accentKey,
         color: tierColor(accentKey, c),
         progress,
+        totalTasks: totalRoots,
+        completedTasks: completedRoots,
+        deadline: nearestDeadline(rootsInFolder),
       });
     }
 
@@ -443,6 +450,8 @@ export default function DashboardScreen() {
     );
     for (const task of ungroupedRoots) {
       if (!isQuestActiveTask(task)) continue;
+      const subtasks = pool.filter((x) => x.parent_task_id === task.id);
+      const completedSubs = subtasks.filter((x) => x.status === 'completed').length;
       const progress = computeRootQuestProgress(task, pool);
       const { label, accentKey } = inferQuestTier(task);
       rows.push({
@@ -452,11 +461,14 @@ export default function DashboardScreen() {
         accentKey,
         color: tierColor(accentKey, c),
         progress,
+        totalTasks: subtasks.length > 0 ? subtasks.length : 1,
+        completedTasks: subtasks.length > 0 ? completedSubs : (task.status === 'completed' ? 1 : 0),
+        deadline: task.deadline ?? undefined,
       });
     }
 
     rows.sort((a, b) => a.progress - b.progress);
-    return rows.slice(0, 3);
+    return rows.slice(0, 5);
   }, [allTasksCache, taskFolders, c]);
 
   const todayTasksList = useMemo(() => {
@@ -579,6 +591,12 @@ export default function DashboardScreen() {
     try {
       const nextStatus = task.status === 'completed' ? 'pending' : 'completed';
       await offlineTaskService.updateTaskStatus(task.id, nextStatus);
+      if (nextStatus === 'completed') {
+        const xp = taskXpValue(task);
+        const { leveledUp } = await addXP(xp);
+        setXpFlash({ amount: xp, key: Date.now() });
+        if (leveledUp) setLevelUpKey(Date.now());
+      }
       setRefreshFlag((f) => !f);
     } catch (e) {
       console.error('toggleTodayTaskComplete', e);
@@ -602,7 +620,7 @@ export default function DashboardScreen() {
     <View style={{ flex: 1, backgroundColor: shell.bg }}>
       <ScrollView
         style={{ flex: 1, backgroundColor: shell.bg }}
-        contentContainerStyle={{ paddingBottom: BOTTOM_NAV_TOTAL_HEIGHT + 72 }}
+        contentContainerStyle={{ paddingBottom: BOTTOM_NAV_TOTAL_HEIGHT + 160 }}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
       >
         <QuestLogScreenHeader
@@ -615,18 +633,34 @@ export default function DashboardScreen() {
 
         <View style={styles.heroBlock}>
           <View style={{ flex: 1, minWidth: 0 }}>
+            <View style={styles.levelBadgeRow}>
+              <View style={[styles.levelBadge, { backgroundColor: c.amber }]}>
+                <Text style={[styles.levelBadgeText, { color: c.bg }]}>LVL {levelProgress.level}</Text>
+              </View>
+              {levelProgress.xpSpanThisLevel > 0 && (
+                <View style={[styles.xpBarOuter, { backgroundColor: c.amberBg, borderColor: c.amberBorder }]}>
+                  <View
+                    style={[
+                      styles.xpBarInner,
+                      {
+                        backgroundColor: c.amber,
+                        width: `${Math.round((levelProgress.xpIntoLevel / levelProgress.xpSpanThisLevel) * 100)}%`,
+                      },
+                    ]}
+                  />
+                </View>
+              )}
+              <Text style={[styles.xpBarLabel, { color: c.amber }]}>
+                {levelProgress.xpIntoLevel}/{levelProgress.xpSpanThisLevel} XP
+              </Text>
+            </View>
             <Text style={[styles.heroGreeting, { color: shell.tx }]}>
               {getTimeGreeting()}, {displayName}
             </Text>
-            <Text style={[styles.heroSub, { color: shell.tx2 }]}>
-              {formatHeaderDate()} · Lvl {levelProgress.level}
-              {levelProgress.xpSpanThisLevel > 0
-                ? ` · ${levelProgress.xpIntoLevel}/${levelProgress.xpSpanThisLevel} XP`
-                : ''}
-            </Text>
+            <Text style={[styles.heroSub, { color: shell.tx2 }]}>{formatHeaderDate()}</Text>
           </View>
           <View style={[styles.dailyXpPill, { borderColor: c.amberBorder, backgroundColor: c.amberBg }]}>
-            <Text style={[styles.dailyXpPillText, { color: c.amber }]}>+{dailyXPBadge} XP</Text>
+            <Text style={[styles.dailyXpPillText, { color: c.amber }]}>+{dailyXPBadge} XP today</Text>
           </View>
         </View>
 
@@ -656,61 +690,69 @@ export default function DashboardScreen() {
         </View>
 
         <View style={[styles.sectionCard, { borderColor: shell.border, backgroundColor: shell.surf }]}>
-          <Text style={[styles.sectionHeading, { color: shell.tx }]}>Active Quests</Text>
+          <View style={styles.sectionHeadingRow}>
+            <Text style={[styles.sectionHeading, { color: shell.tx, marginBottom: 0 }]}>Active Quests</Text>
+            <Pressable onPress={() => router.push('/(app)/tasks')}>
+              <Text style={[styles.sectionSeeAll, { color: c.amber }]}>See all →</Text>
+            </Pressable>
+          </View>
           {loading ? (
             <Text style={[styles.mutedCenter, { color: shell.tx2 }]}>Loading…</Text>
           ) : activeQuestRows.length === 0 ? (
             <Text style={[styles.mutedCenter, { color: shell.tx2 }]}>
-              No active quests yet. Add root-level tasks: ungrouped tasks show as their own quest; folder tasks
-              share a bar per folder.
+              No active quests yet. Add tasks or folders in the Tasks tab to see them here.
             </Text>
           ) : (
-            <ScrollView
-              nestedScrollEnabled
-              style={styles.sectionScroll}
-              contentContainerStyle={styles.sectionScrollContent}
-              showsVerticalScrollIndicator
-              keyboardShouldPersistTaps="handled"
-            >
-              {activeQuestRows.map((row) => (
-                <Pressable key={row.id} style={styles.questRow} onPress={() => router.push('/(app)/tasks')}>
-                  <View style={styles.questTop}>
-                    <Text numberOfLines={1} style={[styles.questTitle, { color: shell.tx }]}>
-                      {row.title}
-                    </Text>
-                    <View style={styles.questRight}>
-                      <View
-                        style={[
-                          styles.tierPill,
-                          {
-                            backgroundColor:
-                              row.accentKey === 'blue'
-                                ? c.blueBg
-                                : row.accentKey === 'teal'
-                                  ? c.tealBg
-                                  : row.accentKey === 'pink'
-                                    ? c.pinkBg
-                                    : c.amberBg,
-                            borderColor:
-                              row.accentKey === 'blue'
-                                ? c.blueBorder
-                                : row.accentKey === 'teal'
-                                  ? c.tealBorder
-                                  : row.accentKey === 'pink'
-                                    ? c.pinkBorder
-                                    : c.amberBorder,
-                          },
-                        ]}
-                      >
+            <View style={styles.questCardList}>
+              {activeQuestRows.map((row) => {
+                const accentBg =
+                  row.accentKey === 'blue' ? c.blueBg
+                  : row.accentKey === 'teal' ? c.tealBg
+                  : row.accentKey === 'pink' ? c.pinkBg
+                  : c.amberBg;
+                const accentBorder =
+                  row.accentKey === 'blue' ? c.blueBorder
+                  : row.accentKey === 'teal' ? c.tealBorder
+                  : row.accentKey === 'pink' ? c.pinkBorder
+                  : c.amberBorder;
+                const deadlineLabel = row.deadline
+                  ? (() => {
+                      try {
+                        const d = parseDate(row.deadline);
+                        return `Due ${d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}`;
+                      } catch { return ''; }
+                    })()
+                  : '';
+                return (
+                  <Pressable
+                    key={row.id}
+                    style={[styles.questCard, { backgroundColor: c.surfaceDeep, borderColor: accentBorder }]}
+                    onPress={() => router.push('/(app)/tasks')}
+                  >
+                    <View style={styles.questCardTop}>
+                      <View style={[styles.tierPill, { backgroundColor: accentBg, borderColor: accentBorder }]}>
                         <Text style={[styles.tierPillText, { color: row.color }]}>{row.tier}</Text>
                       </View>
-                      <Text style={[styles.questPct, { color: row.color }]}>{row.progress}%</Text>
+                      <Text numberOfLines={1} style={[styles.questCardTitle, { color: shell.tx }]}>
+                        {row.title}
+                      </Text>
                     </View>
-                  </View>
-                  <ProgressBar progress={row.progress / 100} color={row.color} style={styles.questBar} />
-                </Pressable>
-              ))}
-            </ScrollView>
+                    <ProgressBar progress={row.progress / 100} color={row.color} style={styles.questBar} />
+                    <View style={styles.questCardMeta}>
+                      <Text style={[styles.questCardMetaText, { color: shell.tx2 }]}>
+                        {row.completedTasks}/{row.totalTasks} tasks
+                      </Text>
+                      <View style={styles.questCardMetaRight}>
+                        {deadlineLabel ? (
+                          <Text style={[styles.questCardMetaText, { color: shell.tx3 }]}>{deadlineLabel}</Text>
+                        ) : null}
+                        <Text style={[styles.questPct, { color: row.color }]}>{row.progress}%</Text>
+                      </View>
+                    </View>
+                  </Pressable>
+                );
+              })}
+            </View>
           )}
         </View>
 
@@ -869,6 +911,23 @@ export default function DashboardScreen() {
         </Modal>
       </Portal>
 
+      {xpFlash && (
+        <XpFlash
+          key={xpFlash.key}
+          amount={xpFlash.amount}
+          onDone={() => setXpFlash(null)}
+        />
+      )}
+      {levelUpKey && (
+        <ConfettiCannon
+          key={levelUpKey}
+          count={120}
+          origin={{ x: 200, y: 0 }}
+          fadeOut
+          autoStart
+          onAnimationEnd={() => setLevelUpKey(null)}
+        />
+      )}
       <BottomNavBar />
       {/* AI Oracle FAB — docs/design.md ✦ */}
       
@@ -898,6 +957,39 @@ const styles = StyleSheet.create({
     marginBottom: 16,
     gap: 12,
   },
+  levelBadgeRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 8,
+  },
+  levelBadge: {
+    borderRadius: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+  },
+  levelBadgeText: {
+    fontFamily: FONT_SERIF,
+    fontSize: 13,
+    fontWeight: '700',
+    letterSpacing: 1,
+  },
+  xpBarOuter: {
+    flex: 1,
+    height: 6,
+    borderRadius: 3,
+    borderWidth: 1,
+    overflow: 'hidden',
+  },
+  xpBarInner: {
+    height: '100%',
+    borderRadius: 3,
+  },
+  xpBarLabel: {
+    fontFamily: FONT_SERIF,
+    fontSize: 11,
+    fontWeight: '600',
+  },
   heroGreeting: {
     fontFamily: FONT_SERIF,
     fontSize: 22,
@@ -905,7 +997,7 @@ const styles = StyleSheet.create({
   },
   heroSub: {
     fontSize: 14,
-    marginTop: 4,
+    marginTop: 2,
     fontFamily: FONT_SERIF,
   },
   dailyXpPill: {
@@ -1008,8 +1100,54 @@ const styles = StyleSheet.create({
   },
   questBar: {
     marginTop: 8,
-    height: 8,
-    borderRadius: 4,
+    height: 6,
+    borderRadius: 3,
+  },
+  sectionHeadingRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  sectionSeeAll: {
+    fontSize: 13,
+    fontFamily: FONT_SERIF,
+    fontWeight: '600',
+  },
+  questCardList: {
+    gap: 10,
+  },
+  questCard: {
+    borderRadius: 10,
+    borderWidth: 1,
+    padding: 12,
+  },
+  questCardTop: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 8,
+  },
+  questCardTitle: {
+    flex: 1,
+    fontFamily: FONT_SERIF,
+    fontSize: 15,
+    fontWeight: '600',
+  },
+  questCardMeta: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginTop: 6,
+  },
+  questCardMetaRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  questCardMetaText: {
+    fontSize: 12,
+    fontFamily: FONT_SERIF,
   },
   todayRow: {
     flexDirection: 'row',

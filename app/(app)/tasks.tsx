@@ -17,6 +17,9 @@ import { FONT_SERIF, type ThemeColors } from '../../constants/lifeTrackerDesign'
 import { useAppTheme } from '../../contexts/AppThemeContext';
 import { ItemFolder } from '../../types/folder';
 import * as foldersStorage from '../../services/foldersStorage';
+import { addXP } from '../../utils/xpSystem';
+import XpFlash from '../../components/XpFlash';
+import ConfettiCannon from 'react-native-confetti-cannon';
 
 function normalizeTasks(raw: Task[]): Task[] {
   return raw.map((t) => ({
@@ -94,6 +97,8 @@ export default function TasksScreen() {
   const [newFolderOpen, setNewFolderOpen] = useState(false);
   const [newFolderName, setNewFolderName] = useState('');
   const [sidebarVisible, setSidebarVisible] = useState(false);
+  const [xpFlash, setXpFlash] = useState<{ amount: number; key: number } | null>(null);
+  const [levelUpKey, setLevelUpKey] = useState<number | null>(null);
 
   const loadFolders = useCallback(async () => {
     if (!user) return;
@@ -192,8 +197,16 @@ export default function TasksScreen() {
   const handleStatusChange = async (taskId: string, status: TaskStatus) => {
     try {
       await offlineTaskService.updateTaskStatus(taskId, status);
-      if (status === 'completed') feedbackSuccess();
-      else if (status === 'failed') feedbackWarning();
+      if (status === 'completed') {
+        feedbackSuccess();
+        const task = tasks.find((t) => t.id === taskId);
+        const xp = task ? (task.xp_reward ?? 15 + (task.priority ?? 0) * 5) : 15;
+        const { leveledUp } = await addXP(xp);
+        setXpFlash({ amount: xp, key: Date.now() });
+        if (leveledUp) setLevelUpKey(Date.now());
+      } else if (status === 'failed') {
+        feedbackWarning();
+      }
       loadTasks();
     } catch (error) {
       console.error('Error updating task status:', error);
@@ -440,6 +453,23 @@ export default function TasksScreen() {
         </Dialog>
       </Portal>
 
+      {xpFlash && (
+        <XpFlash
+          key={xpFlash.key}
+          amount={xpFlash.amount}
+          onDone={() => setXpFlash(null)}
+        />
+      )}
+      {levelUpKey && (
+        <ConfettiCannon
+          key={levelUpKey}
+          count={120}
+          origin={{ x: 200, y: 0 }}
+          fadeOut
+          autoStart
+          onAnimationEnd={() => setLevelUpKey(null)}
+        />
+      )}
       <BottomNavBar />
       <OfflineIndicator />
       <Sidebar isVisible={sidebarVisible} onClose={() => setSidebarVisible(false)} />

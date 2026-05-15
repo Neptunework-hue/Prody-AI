@@ -75,16 +75,18 @@ export async function saveXPState(state: XPState): Promise<void> {
   }
 }
 
-/** Add XP and persist. Returns the updated state. */
-export async function addXP(amount: number): Promise<XPState> {
+/** Add XP and persist. Returns updated state and whether a level-up occurred. */
+export async function addXP(amount: number): Promise<{ state: XPState; leveledUp: boolean; newLevel: number }> {
   const state = await loadXPState();
+  const prevLevel = getLevelInfo(state.totalXP).level;
   const updated: XPState = {
     ...state,
     totalXP: state.totalXP + amount,
     dailyXP: state.dailyXP + amount,
   };
   await saveXPState(updated);
-  return updated;
+  const newLevel = getLevelInfo(updated.totalXP).level;
+  return { state: updated, leveledUp: newLevel > prevLevel, newLevel };
 }
 
 /** Add a completed project to the shelf and award 50 XP. */

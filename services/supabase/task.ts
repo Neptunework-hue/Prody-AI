@@ -1,9 +1,26 @@
 import { supabase } from './client';
 import { Task, TaskCreate, TaskUpdate, TaskStatus } from '../../types/task';
 
+function mapDbToTask(row: Record<string, unknown>): Task {
+  const { start_time, end_time, ...rest } = row;
+  return {
+    ...(rest as Omit<Task, 'startTime' | 'endTime'>),
+    ...(start_time !== undefined ? { startTime: start_time as string } : {}),
+    ...(end_time !== undefined ? { endTime: end_time as string } : {}),
+  } as Task;
+}
+
+function mapTaskToDb(task: Record<string, unknown>): Record<string, unknown> {
+  const { startTime, endTime, ...rest } = task;
+  return {
+    ...rest,
+    ...(startTime !== undefined ? { start_time: startTime } : {}),
+    ...(endTime !== undefined ? { end_time: endTime } : {}),
+  };
+}
+
 export const taskService = {
   async getTasks(userId: string): Promise<Task[]> {
-    console.log('TaskService: Fetching tasks for user:', userId);
     const { data, error } = await supabase
       .from('tasks')
       .select('*')
@@ -14,22 +31,22 @@ export const taskService = {
       console.error('TaskService: Error fetching tasks:', error);
       throw error;
     }
-    
-    console.log('TaskService: Successfully fetched', data?.length || 0, 'tasks:', data);
-    return data || [];
+
+    return (data || []).map((row) => mapDbToTask(row as Record<string, unknown>));
   },
 
   async createTask(task: TaskCreate & { user_id: string }): Promise<Task> {
-    console.log('TaskService: Creating task with data:', task);
+    const dbPayload = mapTaskToDb({
+      ...task,
+      status: 'pending',
+      priority: task.priority || 0,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    } as Record<string, unknown>);
+
     const { data, error } = await supabase
       .from('tasks')
-      .insert([{
-        ...task,
-        status: 'pending',
-        priority: task.priority || 0,
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      }])
+      .insert([dbPayload])
       .select()
       .single();
 
@@ -37,24 +54,25 @@ export const taskService = {
       console.error('TaskService: Error creating task:', error);
       throw error;
     }
-    
-    console.log('TaskService: Task created successfully:', data);
-    return data;
+
+    return mapDbToTask(data as Record<string, unknown>);
   },
 
   async updateTask(taskId: string, updates: TaskUpdate): Promise<Task> {
+    const dbPayload = mapTaskToDb({
+      ...updates,
+      updated_at: new Date().toISOString(),
+    } as Record<string, unknown>);
+
     const { data, error } = await supabase
       .from('tasks')
-      .update({
-        ...updates,
-        updated_at: new Date().toISOString(),
-      })
+      .update(dbPayload)
       .eq('id', taskId)
       .select()
       .single();
 
     if (error) throw error;
-    return data;
+    return mapDbToTask(data as Record<string, unknown>);
   },
 
   async deleteTask(taskId: string): Promise<void> {
@@ -119,8 +137,8 @@ export const taskService = {
         }
       }
       // 2. End time is in the past
-      if (!shouldFail && task.endTime) {
-        const endTime = new Date(task.endTime);
+      if (!shouldFail && task.end_time) {
+        const endTime = new Date(task.end_time as string);
         if (endTime < new Date()) {
           shouldFail = true;
         }
@@ -139,7 +157,8 @@ export const taskService = {
       .single();
 
     if (error) throw error;
-    return data;
+    if (!data) return null;
+    return mapDbToTask(data as Record<string, unknown>);
   },
 
   async updateTaskStatus(taskId: string, status: TaskStatus): Promise<Task> {

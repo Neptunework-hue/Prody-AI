@@ -3,7 +3,7 @@
     "name": "ProdyAI",
     "slug": "prodyai",
     "version": "1.0.0",
-    "scheme": "acme",
+    "scheme": "prodyai",
     "orientation": "portrait",
     "userInterfaceStyle": "dark",
     "assetBundlePatterns": ["**/*"],

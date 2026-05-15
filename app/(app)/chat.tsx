@@ -33,6 +33,8 @@ import { Task, TaskCreate, TaskPriority } from '../../types/task';
 import { formatDateForStorage } from '../../utils/dateUtils';
 import { speakBot, preloadBotVoice } from '../../utils/botSpeech';
 import { addTaskFolder, getOrCreateTaskFolderByName, getTaskFolders } from '../../services/foldersStorage';
+import { focusService } from '../../services/supabase/focus';
+import { habitService } from '../../services/supabase/habitService';
 
 const BOT_NAME = 'PRODY';
 
@@ -49,7 +51,8 @@ const initialMessages: ChatMessage[] = [
     id: '1',
     sender: 'bot',
     text:
-      "Hey — I'm PRODY. I can help you sort out what's on your plate, spin up folders and grouped tasks, break big stuff into steps, and line things up on your calendar.\n\nSay or type something like “plan my week” or “break this project into tasks in folders.”",
+      `Hey — I'm PRODY. I can help you sort out what's on your plate, spin up folders and grouped tasks, break big stuff into steps, and line things up on your calendar.\n\nSay or type something like "plan my week" or "break this project into tasks in folders."`,
+    suggestions: ['Plan my week', 'Add a task', 'Break a project into steps', 'Show my tasks'],
   },
 ];
 
@@ -95,6 +98,26 @@ function detectConversationContext(userMessage: string) {
   return { overwhelmed, likelyVenting };
 }
 
+function getTodayContext(): string {
+  const now = new Date();
+  const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+  const monthNames = ['January', 'February', 'March', 'April', 'May', 'June',
+    'July', 'August', 'September', 'October', 'November', 'December'];
+  const dayName = dayNames[now.getDay()];
+  const monthName = monthNames[now.getMonth()];
+  const dateNum = now.getDate();
+  const year = now.getFullYear();
+  const pad = (n: number) => String(n).padStart(2, '0');
+  const todayIso = `${year}-${pad(now.getMonth() + 1)}-${pad(dateNum)}`;
+  const tomorrowD = new Date(now); tomorrowD.setDate(dateNum + 1);
+  const tomorrowIso = `${tomorrowD.getFullYear()}-${pad(tomorrowD.getMonth() + 1)}-${pad(tomorrowD.getDate())}`;
+  const nextWeekD = new Date(now); nextWeekD.setDate(dateNum + 7);
+  const nextWeekIso = `${nextWeekD.getFullYear()}-${pad(nextWeekD.getMonth() + 1)}-${pad(nextWeekD.getDate())}`;
+  const nextMonthD = new Date(now); nextMonthD.setMonth(now.getMonth() + 1);
+  const nextMonthIso = `${nextMonthD.getFullYear()}-${pad(nextMonthD.getMonth() + 1)}-${pad(nextMonthD.getDate())}`;
+  return `\n\nToday is ${dayName}, ${monthName} ${dateNum}, ${year} (${todayIso}). Tomorrow = ${tomorrowIso}. Next week = ${nextWeekIso}. One month from now = ${nextMonthIso}. Always compute deadlines from this date — never guess or use training-data dates.`;
+}
+
 function buildProdySystemPrompt(userMessage: string): string {
   const ctx = detectConversationContext(userMessage);
   const bits: string[] = [];
@@ -102,10 +125,58 @@ function buildProdySystemPrompt(userMessage: string): string {
     bits.push('They sound overloaded — acknowledge that in one short line before you get practical.');
   }
   if (ctx.likelyVenting) {
-    bits.push('They may be venting — meet that emotionally first; don’t bulldoze into tasks unless they steer there.');
+    bits.push("They may be venting — meet that emotionally first; don't bulldoze into tasks unless they steer there.");
   }
-  if (bits.length === 0) return PRODY_SYSTEM_BASE;
-  return `${PRODY_SYSTEM_BASE}\n\nContext for this turn:\n${bits.join('\n')}`;
+  const dateCtx = getTodayContext();
+  const contextBlock = bits.length > 0 ? `\n\nContext for this turn:\n${bits.join('\n')}` : '';
+  return `${PRODY_SYSTEM_BASE}${dateCtx}${contextBlock}`;
+}
+
+function isWeeklySummaryIntent(msg: string): boolean {
+  const m = msg.toLowerCase();
+  return /\b(week|weekly|this week|last week|past week|how.*(week|did i do)|week.*summary|summarize.*week|recap)\b/.test(m);
+}
+
+async function buildWeeklyContext(userId: string): Promise<string> {
+  const now = new Date();
+  const weekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+  const weekAgoStr = weekAgo.toISOString().split('T')[0];
+
+  try {
+    const [allTasks, sessions, habits] = await Promise.all([
+      offlineTaskService.getTasks(userId),
+      focusService.getSessions(userId),
+      habitService.getHabits(userId),
+    ]);
+
+    const completedThisWeek = allTasks.filter(
+      (t) => t.status === 'completed' && t.updated_at && t.updated_at >= weekAgoStr,
+    );
+    const focusThisWeek = sessions.filter(
+      (s) => s.start_time && s.start_time >= weekAgoStr && s.end_time,
+    );
+    const focusMinutes = focusThisWeek.reduce((sum, s) => {
+      if (!s.start_time || !s.end_time) return sum;
+      return sum + Math.floor((new Date(s.end_time).getTime() - new Date(s.start_time).getTime()) / 60000);
+    }, 0);
+
+    const habitIds = habits.map((h) => h.id);
+    let habitLogsThisWeek = 0;
+    if (habitIds.length > 0) {
+      const hist = await habitService.getHabitHistoryByHabitIds(habitIds);
+      habitLogsThisWeek = hist.filter((r) => r.date >= weekAgoStr && (r.value ?? 0) > 0).length;
+    }
+
+    const totalXpEarned = completedThisWeek.reduce((s, t) => s + (t.xp_reward ?? 15), 0) + focusMinutes;
+
+    return `\n\nUser's last 7 days (use this to give a personal weekly summary — don't just list numbers, reflect on it conversationally):
+- Tasks completed: ${completedThisWeek.length} (${completedThisWeek.slice(0, 3).map((t) => `"${t.title}"`).join(', ')}${completedThisWeek.length > 3 ? ` and ${completedThisWeek.length - 3} more` : ''})
+- Focus sessions: ${focusThisWeek.length} totalling ${focusMinutes} minutes
+- Habit logs: ${habitLogsThisWeek} entries across ${habits.length} habits
+- XP earned this week: ~${totalXpEarned} XP`;
+  } catch {
+    return '';
+  }
 }
 
 type NaturalizePayload =
@@ -179,7 +250,7 @@ function fallbackNaturalize(payload: NaturalizePayload): string {
         ? `I split "${payload.parentTitle}" into a few smaller steps — ${payload.stepTitles.slice(0, 4).join(', ')}${payload.stepTitles.length > 4 ? '…' : ''}.\n\n${payload.coachNote}`
         : `I split "${payload.parentTitle}" into ${payload.stepTitles.length} smaller steps — peek at your list when you're ready.`;
     case 'list_or_rank':
-      return 'Peek at your Tasks tab — that’s where the full picture lives.';
+      return "Peek at your Tasks tab — that's where the full picture lives.";
     default:
       return '';
   }
@@ -564,14 +635,45 @@ type FetchAIStreamCallbacks = {
 };
 
 // Text-based task extraction AI response fetcher
+const VOICE_ACTION_RE = /\b(create|add|task|folder|schedule|remind|plan|set|update|delete|remove|move|deadline|break|split|subtask)\b/i;
+
 async function fetchAIResponseWithTaskExtraction(
   userMessage: string,
   history: { sender: string; text: string }[],
   userId: string,
   onTaskCreated?: () => void,
   streamCallbacks?: FetchAIStreamCallbacks,
+  weeklyContext?: string,
+  voiceMode?: boolean,
 ) {
   const startTime = Date.now();
+
+  if (voiceMode && !VOICE_ACTION_RE.test(userMessage)) {
+    if (getOpenAIKey()) {
+      try {
+        const histMsgs = history.slice(-6).map((m) => ({
+          role: m.sender === 'user' ? 'user' : 'assistant',
+          content: m.text,
+        }));
+        const res = await openaiChatCompletions({
+          messages: [
+            { role: 'system', content: `${buildProdySystemPrompt(userMessage)}\n\nReply in 1–2 short sentences. This will be spoken aloud — no lists, no markdown.` },
+            ...histMsgs,
+            { role: 'user', content: userMessage },
+          ],
+          temperature: API_CONFIG.temperature,
+          max_tokens: 120,
+        });
+        if (res.ok) {
+          const data = (await res.json()) as { choices?: { message?: { content?: string } }[] };
+          const text = data.choices?.[0]?.message?.content?.trim() ?? '';
+          if (text) return { text, suggestions: [] };
+        }
+      } catch {
+        /* fall through to full agent */
+      }
+    }
+  }
   
   try {
     // Check cache first for instant responses
@@ -647,14 +749,15 @@ async function fetchAIResponseWithTaskExtraction(
         sender: (m.sender === 'user' ? 'user' : 'bot') as 'user' | 'bot',
         text: m.text,
       }));
+      const voiceSuffix = voiceMode ? '\n\nReply in 1–2 short sentences. This will be spoken aloud — no lists, no markdown.' : '';
       const agentReply = await runProdyToolAgentLoop({
         userMessage,
         history: agentHistory,
-        systemPrompt: buildProdySystemPrompt(userMessage),
+        systemPrompt: buildProdySystemPrompt(userMessage) + (weeklyContext ?? '') + voiceSuffix,
         userId,
         signal: controller.signal,
         temperature: API_CONFIG.temperature,
-        maxTokens: API_CONFIG.max_tokens,
+        maxTokens: voiceMode ? 180 : API_CONFIG.max_tokens,
         hooks: {
           onTaskMutated: onTaskCreated,
           registerLastBotTask: (t) => {
@@ -1030,6 +1133,7 @@ export default function ChatScreen() {
       { id: String(prev.length + 2), sender: 'bot', text: 'Thinking...', loading: true },
     ]);
     
+    const weeklyCtx = isWeeklySummaryIntent(userMsg) ? await buildWeeklyContext(user.id) : undefined;
     const aiReplyRaw = await fetchAIResponseWithTaskExtraction(
       userMsg,
       [...messages, { sender: 'user', text: userMsg }],
@@ -1046,6 +1150,7 @@ export default function ChatScreen() {
           );
         },
       },
+      weeklyCtx,
     );
     const aiReply = typeof aiReplyRaw === 'string' ? { text: aiReplyRaw, suggestions: [] } : aiReplyRaw;
     setMessages(prev => prev.map(m =>
@@ -1170,15 +1275,9 @@ export default function ChatScreen() {
         () => {
           router.setParams({ refresh: Date.now().toString() });
         },
-        {
-          onStreamDelta: (partial) => {
-            setMessages((prev) =>
-              prev.map((m) =>
-                m.loading ? { ...m, text: partial.trim() ? partial : 'Thinking...' } : m,
-              ),
-            );
-          },
-        },
+        undefined,
+        undefined,
+        true,
       );
       if (voiceOverlayCancelledRef.current) {
         setMessages(prev => prev.filter(m => !m.loading));
@@ -1399,8 +1498,8 @@ export default function ChatScreen() {
     );
   };
 
-  const inputBottomPad = Math.max(insets.bottom, 12);
-  const listBottomPad = INPUT_BAR_HEIGHT + inputBottomPad + 20;
+  const inputBottomPad = Math.max(insets.bottom, 16);
+  const listBottomPad = INPUT_BAR_HEIGHT + inputBottomPad + 24;
 
   return (
     <View style={[styles.root, { backgroundColor: c.bg }]}>
@@ -1526,8 +1625,8 @@ function createChatStyles(c: ThemeColors) {
       paddingBottom: 12,
       paddingHorizontal: 4,
       backgroundColor: c.bg,
-      borderBottomWidth: StyleSheet.hairlineWidth,
-      borderBottomColor: c.borderDefault,
+      borderBottomWidth: 1,
+      borderBottomColor: c.amberBorder,
       zIndex: 10,
     },
     headerIconBtn: {
@@ -1536,10 +1635,11 @@ function createChatStyles(c: ThemeColors) {
     headerTitleCenter: {
       fontFamily: FONT_SERIF,
       fontSize: 18,
-      fontWeight: '600',
-      color: c.tx,
+      fontWeight: '700',
+      color: c.amber,
       flex: 1,
       textAlign: 'center',
+      letterSpacing: 2,
     },
     headerRightSpacer: {
       width: 48,
@@ -1586,11 +1686,13 @@ function createChatStyles(c: ThemeColors) {
       borderTopLeftRadius: 4,
       borderWidth: 1,
       borderColor: c.borderDefault,
+      borderLeftWidth: 3,
+      borderLeftColor: c.amberBorder,
     },
     userBubble: {
-      backgroundColor: c.blueBg,
+      backgroundColor: c.amberBg,
       borderWidth: 1,
-      borderColor: c.blueBorder,
+      borderColor: c.amberBorder,
       borderTopRightRadius: 4,
     },
     messageText: {
@@ -1615,7 +1717,7 @@ function createChatStyles(c: ThemeColors) {
       position: 'absolute',
       left: 0,
       right: 0,
-      bottom: 69,
+      bottom: 0,
       zIndex: 1100,
     },
     capsule: {

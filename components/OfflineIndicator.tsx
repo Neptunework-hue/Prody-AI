@@ -1,103 +1,54 @@
 import React from 'react';
 import { View, StyleSheet, Animated } from 'react-native';
-import { Text, IconButton, useTheme } from 'react-native-paper';
+import { Text, IconButton } from 'react-native-paper';
 import { useOffline } from '../hooks/useOffline';
+import { FONT_SERIF } from '../constants/lifeTrackerDesign';
+import { useAppTheme } from '../contexts/AppThemeContext';
+import { BOTTOM_NAV_TOTAL_HEIGHT } from './BottomNavBar';
 
 interface OfflineIndicatorProps {
   showPendingCount?: boolean;
   onSyncPress?: () => void;
 }
 
-export default function OfflineIndicator({ 
-  showPendingCount = true, 
-  onSyncPress 
+export default function OfflineIndicator({
+  showPendingCount = true,
+  onSyncPress,
 }: OfflineIndicatorProps) {
-  const theme = useTheme();
-  const { isOnline, pendingOperationsCount, lastSync, syncData } = useOffline();
-  const slideAnim = React.useRef(new Animated.Value(-50)).current;
+  const { colors: c } = useAppTheme();
+  const { isOnline, pendingOperationsCount, syncData } = useOffline();
+  const fadeAnim = React.useRef(new Animated.Value(0)).current;
+
+  const visible = !isOnline || pendingOperationsCount > 0;
 
   React.useEffect(() => {
-    if (!isOnline || pendingOperationsCount > 0) {
-      Animated.timing(slideAnim, {
-        toValue: 0,
-        duration: 300,
-        useNativeDriver: true,
-      }).start();
-    } else {
-      Animated.timing(slideAnim, {
-        toValue: -50,
-        duration: 300,
-        useNativeDriver: true,
-      }).start();
-    }
-  }, [isOnline, pendingOperationsCount, slideAnim]);
+    Animated.timing(fadeAnim, {
+      toValue: visible ? 1 : 0,
+      duration: 300,
+      useNativeDriver: true,
+    }).start();
+  }, [visible]);
 
-  if (isOnline && pendingOperationsCount === 0) {
-    return null;
-  }
+  if (!visible) return null;
 
-  const getStatusText = () => {
-    if (!isOnline) {
-      return 'You\'re offline';
-    }
-    if (pendingOperationsCount > 0) {
-      return `${pendingOperationsCount} pending changes`;
-    }
-    return '';
-  };
-
-  const getStatusColor = () => {
-    if (!isOnline) {
-      return '#F44336'; // Red for offline
-    }
-    return '#FF9800'; // Orange for pending sync
-  };
-
-  const getIcon = () => {
-    if (!isOnline) {
-      return 'wifi-off';
-    }
-    return 'sync';
-  };
-
-  const handleSyncPress = () => {
-    if (onSyncPress) {
-      onSyncPress();
-    } else {
-      syncData();
-    }
-  };
+  const isOffline = !isOnline;
+  const label = isOffline
+    ? 'Offline'
+    : `${pendingOperationsCount} pending${pendingOperationsCount === 1 ? '' : ''}`;
+  const icon = isOffline ? 'wifi-off' : 'sync';
+  const pillBg = isOffline ? 'rgba(180,60,60,0.12)' : c.amberBg;
+  const pillBorder = isOffline ? 'rgba(180,60,60,0.3)' : c.amberBorder;
+  const pillColor = isOffline ? '#c62828' : c.amber;
 
   return (
     <Animated.View
-    pointerEvents="box-none"
-      style={[
-        styles.container,
-        {
-          backgroundColor: getStatusColor(),
-          transform: [{ translateY: slideAnim }]
-        }
-      ]}
+      pointerEvents="none"
+      style={[styles.container, { bottom: BOTTOM_NAV_TOTAL_HEIGHT + 10, opacity: fadeAnim }]}
     >
-      <View style={styles.content}>
-        <IconButton
-          icon={getIcon()}
-          iconColor="white"
-          size={20}
-          onPress={handleSyncPress}
-        />
-        <Text style={styles.text}>{getStatusText()}</Text>
-        {showPendingCount && pendingOperationsCount > 0 && (
-          <View style={styles.badge}>
-            <Text style={styles.badgeText}>{pendingOperationsCount}</Text>
-          </View>
-        )}
+      <View style={[styles.pill, { backgroundColor: pillBg, borderColor: pillBorder }]}>
+        <IconButton icon={icon} iconColor={pillColor} size={14} style={styles.pillIcon} />
+        <Text style={[styles.pillText, { color: pillColor }]}>{label}</Text>
       </View>
-      {lastSync && (
-        <Text style={styles.lastSync}>
-          Last sync: {new Date(lastSync).toLocaleTimeString()}
-        </Text>
-      )}
     </Animated.View>
   );
 }
@@ -105,48 +56,25 @@ export default function OfflineIndicator({
 const styles = StyleSheet.create({
   container: {
     position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    zIndex: 10,
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-    elevation: 4,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.25,
-    shadowRadius: 4,
+    alignSelf: 'center',
+    zIndex: 500,
   },
-  content: {
+  pill: {
     flexDirection: 'row',
     alignItems: 'center',
+    borderRadius: 20,
+    borderWidth: 1,
+    paddingRight: 12,
+    paddingLeft: 2,
   },
-  text: {
-    color: 'white',
-    fontSize: 14,
-    fontWeight: '600',
-    flex: 1,
-    marginLeft: 8,
+  pillIcon: {
+    margin: 0,
+    width: 28,
+    height: 28,
   },
-  badge: {
-    backgroundColor: 'white',
-    borderRadius: 10,
-    minWidth: 20,
-    height: 20,
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginLeft: 8,
-  },
-  badgeText: {
-    color: '#F44336',
+  pillText: {
+    fontFamily: FONT_SERIF,
     fontSize: 12,
-    fontWeight: 'bold',
-  },
-  lastSync: {
-    color: 'white',
-    fontSize: 11,
-    opacity: 0.8,
-    marginLeft: 48,
-    marginTop: 2,
+    fontWeight: '600',
   },
 }); 

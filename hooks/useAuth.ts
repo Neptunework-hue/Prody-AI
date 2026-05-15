@@ -133,9 +133,8 @@ export const useAuth = () => {
         email,
         password,
         options: {
-          data: {
-            username: username,
-          },
+          data: { username },
+          emailRedirectTo: 'prodyai://(auth)/login',
         },
       });
 

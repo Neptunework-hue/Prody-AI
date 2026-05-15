@@ -70,11 +70,11 @@ interface FocusTimerProps {
 function createFocusTimerStyles(c: ThemeColors) {
   return StyleSheet.create({
     card: {
-      backgroundColor: c.surfaceDeep,
+      backgroundColor: c.surf,
       borderRadius: 14,
       padding: 16,
-      borderWidth: 0.5,
-      borderColor: c.outlineFaint,
+      borderWidth: 1,
+      borderColor: c.borderDefault,
       marginBottom: 16,
     },
     cardLabel: {
@@ -130,9 +130,9 @@ function createFocusTimerStyles(c: ThemeColors) {
       width: 32,
       height: 32,
       borderRadius: 8,
-      backgroundColor: c.surfaceElevated,
-      borderWidth: 0.5,
-      borderColor: c.outlineFaint,
+      backgroundColor: c.surfaceDeep,
+      borderWidth: 1,
+      borderColor: c.borderDefault,
       alignItems: 'center',
       justifyContent: 'center',
     },
@@ -162,9 +162,9 @@ function createFocusTimerStyles(c: ThemeColors) {
       flex: 1,
       paddingVertical: 6,
       borderRadius: 8,
-      backgroundColor: c.bg,
-      borderWidth: 0.5,
-      borderColor: c.outlineFaint,
+      backgroundColor: c.surfaceDeep,
+      borderWidth: 1,
+      borderColor: c.borderDefault,
       alignItems: 'center',
     },
     presetText: {
@@ -193,7 +193,7 @@ function createFocusTimerStyles(c: ThemeColors) {
       fontFamily: FONT_SERIF,
     },
     startBtn: {
-      backgroundColor: c.teal,
+      backgroundColor: c.amber,
       borderRadius: 10,
       paddingVertical: 13,
       alignItems: 'center',

@@ -1,6 +1,7 @@
 import React, { useMemo } from 'react';
 import { View, StyleSheet, TouchableOpacity } from 'react-native';
 import { Text, IconButton, Checkbox } from 'react-native-paper';
+import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { Task, TaskStatus } from '../../types/task';
 import { FONT_SERIF, type ThemeColors } from '../../constants/lifeTrackerDesign';
 import { useAppTheme } from '../../contexts/AppThemeContext';
@@ -135,25 +136,49 @@ function createTaskCardStyles(p: ThemeColors) {
     actionsRow: {
       flexDirection: 'row',
       alignItems: 'center',
-      flexWrap: 'wrap',
       paddingHorizontal: 8,
       paddingBottom: 10,
-      paddingTop: 4,
-      gap: 6,
+      paddingTop: 2,
+      gap: 8,
     },
-    actionLink: {
+    actionPill: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      borderRadius: 16,
+      borderWidth: 1,
       paddingVertical: 4,
-      paddingHorizontal: 4,
+      paddingHorizontal: 10,
+      gap: 4,
     },
-    actionLinkText: {
+    actionPillComplete: {
+      backgroundColor: 'rgba(56,178,172,0.10)',
+      borderColor: 'rgba(56,178,172,0.35)',
+    },
+    actionPillFail: {
+      backgroundColor: 'rgba(198,40,40,0.08)',
+      borderColor: 'rgba(198,40,40,0.28)',
+    },
+    actionPillDelete: {
+      backgroundColor: p.sidebarIconBoxBg,
+      borderColor: p.ruleHairline,
+    },
+    actionPillTextComplete: {
       fontFamily: FONT_SERIF,
       fontSize: 12,
-      color: p.tx2,
       fontWeight: '600',
+      color: p.teal,
     },
-    actionSep: {
-      color: p.tx3,
+    actionPillTextFail: {
+      fontFamily: FONT_SERIF,
       fontSize: 12,
+      fontWeight: '600',
+      color: '#c62828',
+    },
+    actionPillTextDelete: {
+      fontFamily: FONT_SERIF,
+      fontSize: 12,
+      fontWeight: '600',
+      color: p.tx2,
     },
   });
 }
@@ -303,16 +328,29 @@ export default function TaskCardWithSubtasks({
         )}
 
         <View style={styles.actionsRow}>
-          <TouchableOpacity onPress={handleMainComplete} style={styles.actionLink}>
-            <Text style={styles.actionLinkText}>Complete</Text>
+          <TouchableOpacity
+            onPress={handleMainComplete}
+            style={[styles.actionPill, styles.actionPillComplete]}
+            activeOpacity={0.7}
+          >
+            <MaterialCommunityIcons name="check" size={13} color={palette.teal} />
+            <Text style={styles.actionPillTextComplete}>Complete</Text>
           </TouchableOpacity>
-          <Text style={styles.actionSep}>·</Text>
-          <TouchableOpacity onPress={() => onStatusChange(task.id, 'failed')} style={styles.actionLink}>
-            <Text style={styles.actionLinkText}>Fail</Text>
+          <TouchableOpacity
+            onPress={() => onStatusChange(task.id, 'failed')}
+            style={[styles.actionPill, styles.actionPillFail]}
+            activeOpacity={0.7}
+          >
+            <MaterialCommunityIcons name="close" size={13} color="#c62828" />
+            <Text style={styles.actionPillTextFail}>Fail</Text>
           </TouchableOpacity>
-          <Text style={styles.actionSep}>·</Text>
-          <TouchableOpacity onPress={() => onDelete(task.id)} style={styles.actionLink}>
-            <Text style={styles.actionLinkText}>Delete</Text>
+          <TouchableOpacity
+            onPress={() => onDelete(task.id)}
+            style={[styles.actionPill, styles.actionPillDelete]}
+            activeOpacity={0.7}
+          >
+            <MaterialCommunityIcons name="delete-outline" size={13} color={palette.tx2} />
+            <Text style={styles.actionPillTextDelete}>Delete</Text>
           </TouchableOpacity>
         </View>
       </View>

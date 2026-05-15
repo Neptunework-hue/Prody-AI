@@ -1,4 +1,4 @@
-/**
+﻿/**
  * PRODY — OpenAI tool-calling agent loop.
  * The model chooses tools from meaning; this module executes them and feeds results back.
  */
@@ -13,7 +13,7 @@ import {
 import { formatDateForStorage } from '../../utils/dateUtils';
 import type { Task, TaskCreate, TaskPriority } from '../../types/task';
 
-const MAX_TOOL_ROUNDS = 8;
+const MAX_TOOL_ROUNDS = 3;
 
 const TOOL_SYSTEM_SUFFIX = `
 
@@ -22,7 +22,8 @@ You can call tools to change the user's quest list and calendar. Rules:
 - Call **getTasks** (or **getCalendarEvents**) before **updateTask** if you need to see titles/ids.
 - Use **createTask** for a single clear action; optional **folderName** puts it in that folder (created if missing).
 - Use **createTaskFolder** when they only want a folder by name.
-- After tools succeed, reply in a short, human way (no "task created successfully" boilerplate).`;
+- After tools succeed, reply in a short, human way (no "task created successfully" boilerplate).
+- CRITICAL: All deadlines must be YYYY-MM-DD strings calculated from the exact today date given in the system prompt. "In a month" = today + 30 days. "Next week" = today + 7 days. Never guess or invent dates.`;
 
 export const PRODY_TOOLS: Record<string, unknown>[] = [
   {
@@ -499,7 +500,7 @@ export async function runProdyToolAgentLoop(params: {
     if (!res.ok) {
       const err = await res.text();
       return {
-        text: `Sorry — I couldn’t reach the AI (${res.status}). ${err.slice(0, 160)}`,
+        text: `Sorry — I couldn't reach the AI (${res.status}). ${err.slice(0, 160)}`,
         suggestions: [],
       };
     }
@@ -562,7 +563,7 @@ export async function runProdyToolAgentLoop(params: {
       continue;
     }
 
-    const text = (msg.content ?? '').trim() || 'Tell me what you’re trying to line up.';
+    const text = (msg.content ?? '').trim() || "Tell me what you're trying to line up.";
     if (onStreamDelta) onStreamDelta(text);
     return {
       text,

@@ -316,7 +316,9 @@ export default function HabitsScreen() {
         </RNScrollView>
 
         {visibleHabits.length === 0 && (
-          <Text style={styles.empty}>No habits in this view.</Text>
+          <Text style={styles.empty}>
+            No habits here yet. Tap the + button to add your first one — daily streaks earn XP.
+          </Text>
         )}
         {visibleHabits.map((habit) => (
           <HabitQuestCard

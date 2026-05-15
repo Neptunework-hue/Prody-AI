@@ -289,6 +289,11 @@ export default function FocusScreen() {
 
           <View style={styles.sessionsContainer}>
             <Text style={[styles.sectionTitle, { color: theme.colors.onSurface }]}>Recent Sessions</Text>
+            {sessions.length === 0 && (
+              <Text style={[styles.sessionDate, { color: c.parchmentMuted, textAlign: 'center', marginVertical: 12 }]}>
+                No sessions yet — start a timer above to log your first focus block.
+              </Text>
+            )}
             {sessions.map((session) => (
               <View
                 key={session.id}

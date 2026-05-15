@@ -1,17 +1,26 @@
 -- =============================================================================
--- QuestLog / ProdyAI — FULL Supabase schema (tables + RLS + RPCs + storage)
--- Run in Supabase → SQL Editor in order (single paste is OK).
--- Safe to re-run for policies/functions: uses IF NOT EXISTS / DROP POLICY IF EXISTS.
+-- ProdyAI — FULL Supabase schema (tables + RLS + RPCs + storage)
+-- Run in Supabase → SQL Editor in one paste. Safe to re-run (idempotent).
 --
 -- After SQL: Dashboard → Storage → create bucket "avatars" if insert below fails,
--- then re-run only the storage section or fix bucket name.
+-- then re-run only the storage section.
 --
--- Client note: PostgREST uses DB column names. This file uses snake_case.
--- If your JS inserts use camelCase (e.g. startTime), map to start_time before insert
--- or align TypeScript Task fields with API responses (snake_case from Supabase).
+-- All column names are snake_case (PostgREST convention).
+-- The TypeScript services/supabase/task.ts maps camelCase ↔ snake_case at the boundary.
 -- =============================================================================
 
 CREATE EXTENSION IF NOT EXISTS "pgcrypto";
+
+-- -----------------------------------------------------------------------------
+-- Shared helper: auto-update updated_at on any table that has it
+-- -----------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION public.set_updated_at()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
+BEGIN
+  NEW.updated_at = now();
+  RETURN NEW;
+END;
+$$;
 
 -- -----------------------------------------------------------------------------
 -- 1) profiles (optional — used by hooks/useAuth.ts registration flow)
@@ -19,22 +28,31 @@ CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 CREATE TABLE IF NOT EXISTS public.profiles (
   id uuid PRIMARY KEY REFERENCES auth.users (id) ON DELETE CASCADE,
   email text,
-  username text,
+  username text UNIQUE,
+  full_name text,
+  avatar_url text,
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now()
 );
 
 CREATE INDEX IF NOT EXISTS profiles_username_idx ON public.profiles (username);
 
+DROP TRIGGER IF EXISTS profiles_set_updated_at ON public.profiles;
+CREATE TRIGGER profiles_set_updated_at
+  BEFORE UPDATE ON public.profiles
+  FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
+
 ALTER TABLE public.profiles ENABLE ROW LEVEL SECURITY;
 
 DROP POLICY IF EXISTS "profiles_select_own" ON public.profiles;
+DROP POLICY IF EXISTS "profiles_select_username_public" ON public.profiles;
 DROP POLICY IF EXISTS "profiles_insert_own" ON public.profiles;
 DROP POLICY IF EXISTS "profiles_update_own" ON public.profiles;
 
-CREATE POLICY "profiles_select_own"
-ON public.profiles FOR SELECT TO authenticated
-USING (id = auth.uid());
+-- Anyone (including unauthenticated) can check if a username exists (signup flow).
+CREATE POLICY "profiles_select_username_public"
+ON public.profiles FOR SELECT
+USING (true);
 
 CREATE POLICY "profiles_insert_own"
 ON public.profiles FOR INSERT TO authenticated
@@ -83,7 +101,8 @@ CREATE TABLE IF NOT EXISTS public.tasks (
   priority integer NOT NULL DEFAULT 0 CHECK (priority >= 0 AND priority <= 3),
   xp_reward integer,
   folder_id text,
-  deadline timestamptz,
+  -- "date" avoids timezone-shift bugs; app stores YYYY-MM-DD strings.
+  deadline date,
   start_time timestamptz,
   end_time timestamptz,
   category text,
@@ -92,7 +111,7 @@ CREATE TABLE IF NOT EXISTS public.tasks (
   ai_priority_score numeric,
   parent_task_id uuid REFERENCES public.tasks (id) ON DELETE SET NULL,
   activities jsonb DEFAULT '[]'::jsonb,
-  notify_time timestamptz,
+  notify_time time,
   notification_id text,
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now()
@@ -101,6 +120,11 @@ CREATE TABLE IF NOT EXISTS public.tasks (
 CREATE INDEX IF NOT EXISTS tasks_user_id_idx ON public.tasks (user_id);
 CREATE INDEX IF NOT EXISTS tasks_parent_task_id_idx ON public.tasks (parent_task_id);
 CREATE INDEX IF NOT EXISTS tasks_status_idx ON public.tasks (status);
+
+DROP TRIGGER IF EXISTS tasks_set_updated_at ON public.tasks;
+CREATE TRIGGER tasks_set_updated_at
+  BEFORE UPDATE ON public.tasks
+  FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
 
 ALTER TABLE public.tasks ENABLE ROW LEVEL SECURITY;
 
@@ -145,6 +169,11 @@ CREATE TABLE IF NOT EXISTS public.focus_sessions (
 
 CREATE INDEX IF NOT EXISTS focus_sessions_user_id_idx ON public.focus_sessions (user_id);
 CREATE INDEX IF NOT EXISTS focus_sessions_start_time_idx ON public.focus_sessions (start_time);
+
+DROP TRIGGER IF EXISTS focus_sessions_set_updated_at ON public.focus_sessions;
+CREATE TRIGGER focus_sessions_set_updated_at
+  BEFORE UPDATE ON public.focus_sessions
+  FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
 
 ALTER TABLE public.focus_sessions ENABLE ROW LEVEL SECURITY;
 
@@ -199,13 +228,19 @@ CREATE TABLE IF NOT EXISTS public.habits (
   user_id uuid NOT NULL REFERENCES auth.users (id) ON DELETE CASCADE,
   title text NOT NULL,
   description text,
+  -- target: goal amount (e.g. 2000 steps, 8 glasses). Optional.
+  target numeric,
+  -- icon: legacy emoji/icon key, no longer displayed in UI but kept for compatibility.
+  icon text,
   progress integer NOT NULL DEFAULT 0,
   frequency text NOT NULL DEFAULT 'daily'
     CHECK (frequency IN ('daily', 'weekly', 'monthly')),
   streak integer NOT NULL DEFAULT 0,
+  -- days: 0=Sun … 6=Sat for non-daily habits.
   days integer[] NOT NULL DEFAULT ARRAY[0, 1, 2, 3, 4, 5, 6],
   history jsonb NOT NULL DEFAULT '[]'::jsonb,
-  notify_time timestamptz,
+  -- notify_time stored as HH:MM:SS from the app (time-of-day only).
+  notify_time time,
   notification_id text,
   xp_reward integer,
   created_at timestamptz NOT NULL DEFAULT now(),
@@ -213,6 +248,11 @@ CREATE TABLE IF NOT EXISTS public.habits (
 );
 
 CREATE INDEX IF NOT EXISTS habits_user_id_idx ON public.habits (user_id);
+
+DROP TRIGGER IF EXISTS habits_set_updated_at ON public.habits;
+CREATE TRIGGER habits_set_updated_at
+  BEFORE UPDATE ON public.habits
+  FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
 
 ALTER TABLE public.habits ENABLE ROW LEVEL SECURITY;
 

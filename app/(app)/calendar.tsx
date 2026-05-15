@@ -7,7 +7,13 @@ import {
   RefreshControl,
   AppState,
   Alert,
+  Dimensions,
 } from 'react-native';
+
+const SCREEN_WIDTH = Dimensions.get('window').width;
+const CALENDAR_H_PAD = 16;
+const DAY_SIZE = Math.floor((SCREEN_WIDTH - CALENDAR_H_PAD * 2) / 7);
+const WEEKDAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 import { Text, Card, Button, IconButton, Portal, Modal } from 'react-native-paper';
 import { useAuth } from '../../hooks/useAuth';
 import { offlineTaskService } from '../../services/offline/taskService';
@@ -299,29 +305,27 @@ const CalendarScreen = () => {
     });
   };
 
-  // Calendar grid renderer
   const renderCalendarGrid = () => {
-    const now = new Date();
     const year = selectedDate.getFullYear();
     const month = selectedDate.getMonth();
     const firstDay = new Date(year, month, 1);
     const lastDay = new Date(year, month + 1, 0);
-    const days = [];
+    const cells: React.ReactNode[] = [];
 
-    // Add empty days for the first week if needed
     const firstDayOfWeek = firstDay.getDay();
     for (let i = 0; i < firstDayOfWeek; i++) {
-      days.push(<View key={`empty-${i}`} style={styles.calendarDay} />);
+      cells.push(<View key={`empty-${i}`} style={styles.calendarDay} />);
     }
 
     for (let i = 1; i <= lastDay.getDate(); i++) {
       const date = new Date(year, month, i);
-      const key = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
-      const dayTasks = tasksByDate[key] || [];
+      const key = `${year}-${String(month + 1).padStart(2, '0')}-${String(i).padStart(2, '0')}`;
+      const dayTaskList = tasksByDate[key] || [];
+      const hasHabit = habits.some((h) => isHabitDueOnDate(h, date));
       const isToday = date.toDateString() === new Date().toDateString();
       const isSelected = key === selectedDateKey;
 
-      days.push(
+      cells.push(
         <TouchableOpacity
           key={key}
           style={[
@@ -330,6 +334,7 @@ const CalendarScreen = () => {
             isToday && !isSelected && styles.calendarDayToday,
           ]}
           onPress={() => setSelectedDate(date)}
+          activeOpacity={0.7}
         >
           <Text
             style={[
@@ -340,31 +345,26 @@ const CalendarScreen = () => {
           >
             {i}
           </Text>
-          {dayTasks.length > 0 && (
-            <View style={styles.calendarDotsRow}>
-              {dayTasks.slice(0, 3).map((task, idx) => (
-                <View
-                  key={idx}
-                  style={{
-                    width: 6,
-                    height: 6,
-                    borderRadius: 3,
-                    backgroundColor: getPriorityColor(task.priority),
-                    marginHorizontal: 1,
-                  }}
-                />
-              ))}
-              {dayTasks.length > 3 && (
-                <Text style={styles.calendarMoreTasks} numberOfLines={1}>
-                  +{dayTasks.length - 3}
-                </Text>
-              )}
-            </View>
-          )}
+          <View style={styles.calendarDotsRow}>
+            {dayTaskList.slice(0, 2).map((task, idx) => (
+              <View key={idx} style={[styles.dot, { backgroundColor: getPriorityColor(task.priority) }]} />
+            ))}
+            {hasHabit && <View style={[styles.dot, { backgroundColor: c.teal }]} />}
+          </View>
         </TouchableOpacity>
       );
     }
-    return <View style={styles.calendarGrid}>{days}</View>;
+
+    return (
+      <View style={styles.calendarWrap}>
+        <View style={styles.weekdayHeader}>
+          {WEEKDAY_LABELS.map((d) => (
+            <Text key={d} style={styles.weekdayLabel}>{d}</Text>
+          ))}
+        </View>
+        <View style={styles.calendarGrid}>{cells}</View>
+      </View>
+    );
   };
 
   return (
@@ -436,40 +436,45 @@ const CalendarScreen = () => {
             }
           >
             {dayTasks.length === 0 && selectedHabits.length === 0 ? (
-              <Text style={styles.noEvents}>No events or habits for this day.</Text>
+              <Text style={styles.noEvents}>Nothing scheduled — enjoy the free day.</Text>
             ) : (
               <>
-                {dayTasks.map((task) => (
-                  <TouchableOpacity key={task.id} onPress={() => handleTaskPress(task)} activeOpacity={0.7}>
-                    <Card
-                      elevation={0}
-                      style={[styles.eventCard, { borderLeftColor: getPriorityColor(task.priority) }]}
-                    >
-                      <Card.Content style={{ flexDirection: 'row', alignItems: 'center' }}>
-                        <View style={[styles.eventPriorityDot, { backgroundColor: getPriorityColor(task.priority) }]} />
+                {dayTasks.length > 0 && (
+                  <View style={styles.detailSection}>
+                    <Text style={styles.detailSectionTitle}>Tasks</Text>
+                    {dayTasks.map((task) => (
+                      <TouchableOpacity
+                        key={task.id}
+                        onPress={() => handleTaskPress(task)}
+                        activeOpacity={0.7}
+                        style={[styles.eventRow, { borderLeftColor: getPriorityColor(task.priority) }]}
+                      >
                         <View style={{ flex: 1 }}>
                           <Text style={styles.eventTitle}>{task.title}</Text>
-                          <Text style={styles.eventTime}>
-                            {task.startTime && task.endTime ? `${formatTime(task.startTime)} - ${formatTime(task.endTime)}` : 'All day'}
-                          </Text>
-                          {task.description && (
-                            <Text style={styles.eventDescription} numberOfLines={2}>{task.description}</Text>
-                          )}
+                          {task.description ? (
+                            <Text style={styles.eventDescription} numberOfLines={1}>{task.description}</Text>
+                          ) : null}
                         </View>
-                      </Card.Content>
-                    </Card>
-                  </TouchableOpacity>
-                ))}
-                {selectedHabits.length > 0 && (
-                  <View style={styles.habitsBlock}>
-                    <Text style={styles.habitsBlockTitle}>Habits for this day</Text>
-                    {selectedHabits.map((habit) => (
-                      <Card key={habit.id} elevation={0} style={styles.habitCard}>
-                        <Card.Content style={styles.habitCardContent}>
-                          <Text style={styles.habitTitle}>{habit.title}</Text>
-                        </Card.Content>
-                      </Card>
+                        <View style={[styles.statusPill, { backgroundColor: task.status === 'completed' ? c.tealBg : c.amberBg, borderColor: task.status === 'completed' ? c.tealBorder : c.amberBorder }]}>
+                          <Text style={[styles.statusPillText, { color: task.status === 'completed' ? c.teal : c.amber }]}>
+                            {task.status === 'completed' ? 'Done' : task.status === 'failed' ? 'Failed' : 'Pending'}
+                          </Text>
+                        </View>
+                      </TouchableOpacity>
                     ))}
+                  </View>
+                )}
+                {selectedHabits.length > 0 && (
+                  <View style={styles.detailSection}>
+                    <Text style={styles.detailSectionTitle}>Habits</Text>
+                    <View style={styles.habitChipsRow}>
+                      {selectedHabits.map((habit) => (
+                        <View key={habit.id} style={[styles.habitChip, { backgroundColor: c.tealBg, borderColor: c.tealBorder }]}>
+                          <View style={[styles.habitChipDot, { backgroundColor: c.teal }]} />
+                          <Text style={[styles.habitChipText, { color: c.teal }]}>{habit.title}</Text>
+                        </View>
+                      ))}
+                    </View>
                   </View>
                 )}
               </>
@@ -676,48 +681,57 @@ function createCalendarStyles(c: ThemeColors) {
       flexDirection: 'row',
       alignItems: 'center',
       justifyContent: 'flex-start',
-      paddingHorizontal: 12,
-      paddingBottom: 8,
+      paddingHorizontal: CALENDAR_H_PAD,
+      paddingBottom: 4,
     },
     todayButton: {
+      paddingVertical: 4,
+    },
+    calendarWrap: {
+      paddingHorizontal: CALENDAR_H_PAD,
+      marginBottom: 4,
+    },
+    weekdayHeader: {
+      flexDirection: 'row',
+      marginBottom: 4,
+    },
+    weekdayLabel: {
+      width: DAY_SIZE,
+      textAlign: 'center',
+      fontFamily: FONT_SERIF,
+      fontSize: 11,
+      fontWeight: '600',
+      color: c.tx2,
       paddingVertical: 4,
     },
     calendarGrid: {
       flexDirection: 'row',
       flexWrap: 'wrap',
-      justifyContent: 'flex-start',
-      paddingHorizontal: 12,
-      marginBottom: 8,
     },
     calendarDay: {
-      width: 36,
-      height: 48,
+      width: DAY_SIZE,
+      height: DAY_SIZE + 8,
       alignItems: 'center',
       justifyContent: 'center',
-      margin: 2,
       borderRadius: 10,
-      backgroundColor: c.surf,
-      borderWidth: 1,
-      borderColor: c.borderDefault,
     },
     calendarDaySelected: {
       backgroundColor: c.amber,
-      borderWidth: 2,
-      borderColor: c.amber,
     },
     calendarDayToday: {
       backgroundColor: c.amberBg,
-      borderWidth: 2,
-      borderColor: c.amberBorder,
+      borderWidth: 1.5,
+      borderColor: c.amber,
     },
     calendarDayText: {
       fontFamily: FONT_SERIF,
       fontSize: 15,
-      fontWeight: '600',
+      fontWeight: '500',
       color: c.tx,
     },
     calendarDayTextSelected: {
-      color: c.chipSelectedFg,
+      color: '#fff',
+      fontWeight: '700',
     },
     calendarDayTextToday: {
       color: c.amber,
@@ -725,54 +739,69 @@ function createCalendarStyles(c: ThemeColors) {
     },
     calendarDotsRow: {
       flexDirection: 'row',
-      marginTop: 2,
+      marginTop: 3,
       alignItems: 'center',
+      gap: 2,
+      height: 7,
+    },
+    dot: {
+      width: 5,
+      height: 5,
+      borderRadius: 3,
     },
     calendarMoreTasks: {
-      fontSize: 10,
+      fontSize: 9,
       fontWeight: '700',
       color: c.tx2,
-      marginLeft: 2,
     },
     selectedDateBar: {
-      backgroundColor: c.bg2,
-      padding: 12,
-      borderTopLeftRadius: 12,
-      borderTopRightRadius: 12,
-      marginTop: 8,
-      marginHorizontal: 12,
-      borderWidth: 1,
+      backgroundColor: c.surf,
+      paddingHorizontal: 16,
+      paddingVertical: 10,
+      marginTop: 4,
+      borderTopWidth: StyleSheet.hairlineWidth,
+      borderBottomWidth: StyleSheet.hairlineWidth,
       borderColor: c.borderDefault,
     },
     selectedDateText: {
       fontFamily: FONT_SERIF,
       color: c.tx,
-      fontSize: 15,
+      fontSize: 14,
       fontWeight: '600',
     },
     eventsList: {
       flex: 1,
       paddingHorizontal: 16,
-      marginTop: 8,
       backgroundColor: c.bg,
     },
-    eventCard: {
-      marginBottom: 12,
-      borderRadius: 12,
+    detailSection: {
+      marginTop: 16,
+    },
+    detailSectionTitle: {
+      fontFamily: FONT_SERIF,
+      fontSize: 13,
+      fontWeight: '700',
+      color: c.tx2,
+      letterSpacing: 0.8,
+      textTransform: 'uppercase',
+      marginBottom: 10,
+    },
+    eventRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
       backgroundColor: c.surf,
+      borderRadius: 10,
       borderLeftWidth: 4,
       borderWidth: 1,
       borderColor: c.borderDefault,
-    },
-    eventPriorityDot: {
-      width: 12,
-      height: 12,
-      borderRadius: 6,
-      marginRight: 10,
+      paddingHorizontal: 12,
+      paddingVertical: 10,
+      marginBottom: 8,
+      gap: 8,
     },
     eventTitle: {
       fontFamily: FONT_SERIF,
-      fontSize: 16,
+      fontSize: 15,
       fontWeight: '600',
       color: c.tx,
     },
@@ -787,6 +816,41 @@ function createCalendarStyles(c: ThemeColors) {
       color: c.tx2,
       marginTop: 2,
       fontFamily: FONT_SERIF,
+    },
+    statusPill: {
+      borderRadius: 8,
+      borderWidth: 1,
+      paddingHorizontal: 8,
+      paddingVertical: 3,
+    },
+    statusPillText: {
+      fontFamily: FONT_SERIF,
+      fontSize: 11,
+      fontWeight: '700',
+    },
+    habitChipsRow: {
+      flexDirection: 'row',
+      flexWrap: 'wrap',
+      gap: 8,
+    },
+    habitChip: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      borderRadius: 20,
+      borderWidth: 1,
+      paddingHorizontal: 12,
+      paddingVertical: 6,
+      gap: 6,
+    },
+    habitChipDot: {
+      width: 7,
+      height: 7,
+      borderRadius: 4,
+    },
+    habitChipText: {
+      fontFamily: FONT_SERIF,
+      fontSize: 13,
+      fontWeight: '600',
     },
     noEvents: {
       color: c.tx2,
@@ -867,32 +931,6 @@ function createCalendarStyles(c: ThemeColors) {
       fontSize: 13,
       fontWeight: '400',
       color: c.tx2,
-    },
-    habitsBlock: {
-      marginTop: 16,
-    },
-    habitsBlockTitle: {
-      fontFamily: FONT_SERIF,
-      fontWeight: '600',
-      fontSize: 17,
-      marginBottom: 8,
-      color: c.tx,
-    },
-    habitCard: {
-      marginBottom: 8,
-      borderRadius: 12,
-      backgroundColor: c.surf,
-      borderWidth: 1,
-      borderColor: c.borderDefault,
-    },
-    habitCardContent: {
-      paddingVertical: 4,
-    },
-    habitTitle: {
-      fontFamily: FONT_SERIF,
-      fontWeight: '600',
-      fontSize: 15,
-      color: c.tx,
     },
     modalContainer: {
       backgroundColor: c.surfaceElevated,
