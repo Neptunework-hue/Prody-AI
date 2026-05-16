@@ -132,50 +132,54 @@ export default function HabitsScreen() {
     description?: string;
     notifyTime: string | Date;
     notification_id?: string;
-  }) {
-    if (!habit.notifyTime) return;
-    const Notifications = await import('expo-notifications');
-    const { status } = await Notifications.getPermissionsAsync();
-    if (status !== 'granted') {
-      await Notifications.requestPermissionsAsync();
+  }): Promise<string | null> {
+    if (!habit.notifyTime) return null;
+    try {
+      const Notifications = await import('expo-notifications');
+      const { status } = await Notifications.getPermissionsAsync();
+      if (status !== 'granted') {
+        const { status: newStatus } = await Notifications.requestPermissionsAsync();
+        if (newStatus !== 'granted') return null;
+      }
+      if (habit.notification_id) {
+        await Notifications.cancelScheduledNotificationAsync(habit.notification_id);
+      }
+      const notifyDate = new Date(habit.notifyTime);
+      const now = new Date();
+      if (notifyDate <= now) {
+        notifyDate.setDate(notifyDate.getDate() + 1);
+      }
+      const notificationId = await Notifications.scheduleNotificationAsync({
+        content: {
+          title: habit.title,
+          body: habit.description || 'Habit Reminder',
+          sound: true,
+        },
+        trigger: {
+          type: 'daily',
+          hour: notifyDate.getHours(),
+          minute: notifyDate.getMinutes(),
+        } as any,
+      });
+      return notificationId;
+    } catch (e) {
+      console.warn('Notification scheduling failed (habit will still be created):', e);
+      return null;
     }
-    if (habit.notification_id) {
-      await Notifications.cancelScheduledNotificationAsync(habit.notification_id);
-    }
-    const notifyDate = new Date(habit.notifyTime);
-    const now = new Date();
-    if (notifyDate < now) {
-      notifyDate.setDate(notifyDate.getDate() + 1);
-    }
-    const notificationId = await Notifications.scheduleNotificationAsync({
-      content: {
-        title: habit.title,
-        body: habit.description || 'Habit Reminder',
-        sound: true,
-      },
-      trigger: {
-      type: 'daily',
-      hour: notifyDate.getHours(),
-      minute: notifyDate.getMinutes(),
-    } as any,
-    });
-    return notificationId;
   }
 
   const handleSave = async () => {
     if (!user) return;
     if (!form.title) return;
-    let notificationId: string | null = null;
     try {
-      if (form.notifyTime) {
-        notificationId = (await scheduleHabitNotification({
-          ...form,
-          title: form.title,
-          description: form.description,
-          notifyTime: form.notifyTime,
-        })) ?? null ;
-      }
-      const habitData: any  = {
+      const notificationId = form.notifyTime
+        ? await scheduleHabitNotification({
+            title: form.title,
+            description: form.description,
+            notifyTime: form.notifyTime,
+          })
+        : null;
+      const habitData: any = {
         user_id: user.id,
         title: form.title,
         description: form.description,
@@ -185,8 +189,8 @@ export default function HabitsScreen() {
         history: [],
         days: form.frequency === 'daily' ? [0, 1, 2, 3, 4, 5, 6] : form.days,
         notify_time: form.notifyTime
-      ? new Date(form.notifyTime).toTimeString().slice(0, 8)
-      : null,
+          ? new Date(form.notifyTime).toTimeString().slice(0, 8)
+          : null,
         notification_id: notificationId,
       };
       const created = await habitService.addHabit(habitData);
